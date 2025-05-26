@@ -4,7 +4,6 @@ from .routers.spot_router import spots_router
 from .routers.itinerary_router import itinerary_router
 from .routers.data_prep_router import data_prep_router
 from .routers.generation_router import generation_router
-from .routers.or_tools_router import or_tools_router
 
 app = FastAPI(
     title="Travel Itinerary Planner API (Firestore Refactored)",
@@ -16,8 +15,10 @@ app.include_router(spots_router, prefix="/api")
 app.include_router(itinerary_router, prefix="/api")
 app.include_router(data_prep_router, prefix="/api")
 app.include_router(generation_router, prefix="/api")
-app.include_router(or_tools_router, prefix="/api")
+
 
 @app.get("/", include_in_schema=False)
 async def root_path():
-    return {"message": "Welcome to the Refactored Travel Itinerary Planner API. See /docs for details."}
+    return {
+        "message": "Welcome to the Refactored Travel Itinerary Planner API. See /docs for details."
+    }

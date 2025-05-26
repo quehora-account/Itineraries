@@ -1,0 +1,3 @@
+TEXT_EMBEDDING_DIMENSION = 128  # Simplified dimension for simulated embeddings
+DEFAULT_TRANSPORT_MOYEN_MIN = 30
+LUNCH_DURATION_MIN = 90
