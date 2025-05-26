@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class Settings:
@@ -12,3 +15,11 @@ class Settings:
 
 
 settings = Settings()
+
+assert settings.API_KEY is not None, "API_KEY is not set"
+assert settings.AUTH_DOMAIN is not None, "AUTH_DOMAIN is not set"
+assert settings.PROJECT_ID is not None, "PROJECT_ID is not set"
+assert settings.STORAGE_BUCKET is not None, "STORAGE_BUCKET is not set"
+assert settings.MESSAGING_SENDER_ID is not None, "MESSAGING_SENDER_ID is not set"
+assert settings.APP_ID is not None, "APP_ID is not set"
+assert settings.MEASUREMENT_ID is not None, "MEASUREMENT_ID is not set"

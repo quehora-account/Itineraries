@@ -5,8 +5,7 @@ from app.services.utils import simulate_text_embedding, cosine_similarity
 from app.services.firestore_service import (
     get_all_spots_from_db,
     update_spot_embedding_in_db,
-    Spot as SpotFromDB,
-)  #
+)
 
 spots_router = APIRouter(prefix="/spots", tags=["Spot Selection"])
 
