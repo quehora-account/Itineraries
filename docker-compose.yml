@@ -1,0 +1,10 @@
+services:
+    backend:
+        build: .
+        ports:
+            - '8000:8000'
+        environment:
+            - UVICORN_RELOAD=true
+        volumes:
+            - .:/app
+        tty: true
