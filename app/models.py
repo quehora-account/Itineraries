@@ -1,7 +1,8 @@
 from typing import List, Dict, Optional, Tuple, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from enum import Enum
-import random
+from datetime import datetime
+from google.cloud.firestore import GeoPoint
 
 
 class TravelCompanion(str, Enum):
@@ -63,36 +64,92 @@ class SpotHighlight(BaseModel):
     description: Optional[str] = None
 
 
+class Hours(BaseModel):
+    start: str
+    end: str
+
+
+class Tarification(BaseModel):
+    price: str
+    condition: str
+
+
+class OpenHours(BaseModel):
+    hours: List[Hours]
+
+
+class ExceptionalOpenHours(BaseModel):
+    date: datetime
+    hours: List[Hours]
+
+
+class LastCrowdReport(BaseModel):
+    createdAt: datetime
+    userId: str
+    duration: str
+    intensity: int
+
+
+class BalancePremium(BaseModel):
+    from_date: datetime
+    to: datetime
+    gem: int
+
+
+class PulsePremium(BaseModel):
+    from_date: datetime = Field(alias="from")
+    to: datetime
+    gem: int
+
+
 class SpotBase(BaseModel):
     name: str
+    fullPrice: Optional[Tarification]
+    reducedPrice: Optional[Tarification]
+    freePrice: Optional[Tarification]
+    imageCardPath: str
+    imageIsoPath: str
+    imageGalleryPaths: List[str]
+    visitDuration: str
+    score: float
+    type: str
+    website: str
     description: str
-    type: ActivityType
-    highlights: List[SpotHighlight] = []
-    playlist_labels: List[str] = []
-    address: Optional[str] = None
-    latitude: float
-    longitude: float
-    embedding: Optional[List[float]] = None
-    popularity_score: float = Field(
-        default_factory=lambda: random.uniform(0, 5_000_000)
-    )
-    standard_duration_min: int
-    open_time_local: Optional[str] = None
-    close_time_local: Optional[str] = None
-    is_outdoor: bool = False
-    popular_times_hourly: Optional[Dict[int, int]] = None  # Key: hour (0-23)
-    density_index: Optional[int] = Field(None, ge=1, le=5)
+    tips: List[str]
+    highlights: List[str]
+    coordinates: GeoPoint
+    cityId: str
+    circleRadius: float
+    regionId: str
+    playlistIds: List[str]
+    density: List[float]
+    exceptionalOpenHours: List[ExceptionalOpenHours]
+    allCrowdReports: List[LastCrowdReport]
+    openHours: List[OpenHours]
+    popularTimes: List[Dict[str, float]]
+    lastCrowdReport: Optional[LastCrowdReport] = None
+    balancePremium: Optional[BalancePremium]
+    pulsePremium: Optional[PulsePremium]
+    rating: float
 
+    @field_validator('coordinates', mode='before')
+    @classmethod
+    def validate_coordinates(cls, v):
+        if isinstance(v, dict) and 'latitude' in v and 'longitude' in v:
+            return GeoPoint(v['latitude'], v['longitude'])
+        return v
 
-class SpotCreate(SpotBase):
-    pass
+    class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+        }
 
-
-class Spot(SpotBase):  # Model for data retrieved from Firestore, includes ID
+class Spot(SpotBase):
     id: str
 
     class Config:
-        orm_mode = True  # For compatibility if ever used with ORMs, good practice
+        orm_mode = True
         arbitrary_types_allowed = True
 
 

@@ -1,6 +1,6 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
-from app.models import Spot, SpotCreate
+from app.models import Spot, SpotBase
 from app.core.config import settings
 from typing import List, Optional
 from fastapi import HTTPException
@@ -37,7 +37,7 @@ async def get_all_spots_from_db() -> List[Spot]:
     return spots_list
 
 
-async def add_spot_to_db(spot_data: SpotCreate) -> Spot:
+async def add_spot_to_db(spot_data: SpotBase) -> Spot:
     if not store:
         raise HTTPException(status_code=503, detail="Firestore not available")
 
