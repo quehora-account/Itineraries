@@ -15,10 +15,3 @@ app.include_router(spots_router, prefix="/api")
 app.include_router(itinerary_router, prefix="/api")
 app.include_router(data_prep_router, prefix="/api")
 app.include_router(generation_router, prefix="/api")
-
-
-@app.get("/", include_in_schema=False)
-async def root_path():
-    return {
-        "message": "Welcome to the Refactored Travel Itinerary Planner API. See /docs for details."
-    }

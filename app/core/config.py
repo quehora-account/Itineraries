@@ -12,6 +12,8 @@ class Settings:
     MESSAGING_SENDER_ID = os.getenv("MESSAGING_SENDER_ID")
     APP_ID = os.getenv("APP_ID")
     MEASUREMENT_ID = os.getenv("MEASUREMENT_ID")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    SPOTS_COLLECTION = 'spot'
 
 
 settings = Settings()
@@ -23,3 +25,4 @@ assert settings.STORAGE_BUCKET is not None, "STORAGE_BUCKET is not set"
 assert settings.MESSAGING_SENDER_ID is not None, "MESSAGING_SENDER_ID is not set"
 assert settings.APP_ID is not None, "APP_ID is not set"
 assert settings.MEASUREMENT_ID is not None, "MEASUREMENT_ID is not set"
+assert settings.OPENAI_API_KEY is not None, "OPENAI_API_KEY is not set"

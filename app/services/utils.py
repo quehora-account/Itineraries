@@ -9,17 +9,22 @@ from app.models import (
     WeatherForDate,
 )
 from typing import List, Dict, Tuple
+from openai import OpenAI
+from app.core.config import settings
 
 DEFAULT_TRANSPORT_MOYEN_MIN = 30
 LUNCH_DURATION_MIN = 90
-TEXT_EMBEDDING_DIMENSION_UTIL = 128  # Renamed to avoid conflict if main also defines
 
+client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
-def simulate_text_embedding(
-    text: str, dimension: int = TEXT_EMBEDDING_DIMENSION_UTIL
+def get_embedding(
+    text: str
 ) -> List[float]:
-    random.seed(hash(text))
-    return [random.random() for _ in range(dimension)]
+    response = client.embeddings.create(
+        input=text,
+        model="text-embedding-3-small",
+    )
+    return response.data[0].embedding
 
 
 def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:

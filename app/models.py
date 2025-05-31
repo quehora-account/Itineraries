@@ -1,6 +1,7 @@
 from typing import List, Dict, Optional, Tuple, Any, Union
 from pydantic import BaseModel, Field
 from enum import Enum
+import random
 
 
 class TravelCompanion(str, Enum):
@@ -40,7 +41,6 @@ class OptimizationMode(str, Enum):
     FREEMIUM = "freemium"
 
 
-# --- Pydantic Models (from original code, slightly adapted for Firestore if needed) ---
 class UserPreferences(BaseModel):
     destination: str
     travel_dates: List[str] = Field(
@@ -63,7 +63,7 @@ class SpotHighlight(BaseModel):
     description: Optional[str] = None
 
 
-class SpotBase(BaseModel):  # Base model for creation/update, ID handled by Firestore
+class SpotBase(BaseModel):
     name: str
     description: str
     type: ActivityType
