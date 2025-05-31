@@ -1,10 +1,11 @@
-from typing import List, Dict, Optional, Tuple, Any, Union
-from pydantic import BaseModel, Field, field_validator
+from typing import List, Dict, Optional, Tuple, Any, Union, Sequence
+from pydantic import BaseModel, Field
 from enum import Enum
 from datetime import datetime
-from google.cloud.firestore import GeoPoint
-from google.cloud.firestore_v1.vector import Vector
 
+class GeoPoint(BaseModel):
+    latitude: float
+    longitude: float
 
 class TravelCompanion(str, Enum):
     SOLO = "solo"
@@ -133,13 +134,6 @@ class SpotBase(BaseModel):
     pulsePremium: Optional[PulsePremium]
     rating: float
 
-    @field_validator('coordinates', mode='before')
-    @classmethod
-    def validate_coordinates(cls, v):
-        if isinstance(v, dict) and 'latitude' in v and 'longitude' in v:
-            return GeoPoint(v['latitude'], v['longitude'])
-        return v
-
     class Config:
         arbitrary_types_allowed = True
         json_encoders = {
@@ -148,11 +142,14 @@ class SpotBase(BaseModel):
 
 class Spot(SpotBase):
     id: str
-    embedding: Optional[Vector] = None
+    embedding: Optional[Sequence[float]] = None
 
     class Config:
         from_attributes = True
         arbitrary_types_allowed = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+        }
 
 class Playlist(BaseModel):
     id: str

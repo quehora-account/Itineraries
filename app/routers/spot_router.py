@@ -13,6 +13,7 @@ spots_router = APIRouter(prefix="/spots", tags=["Spot Selection"])
 
 @spots_router.post("/select", response_model=List[MatchedSpot])
 async def select_spots_endpoint(preferences: UserPreferences):
+    print('Computing user embedding')
     pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.inspiring_activity_types)}, Pace: {preferences.visit_pace.value}"
     user_emb = get_embedding(pref_text)
 
@@ -23,7 +24,8 @@ async def select_spots_endpoint(preferences: UserPreferences):
 
     matched_spots_list = []
     for spot_obj in all_spots:
-        if spot_obj.embedding is not None:
+        if True or spot_obj.embedding is None:
+            print('Computing embedding for spot: ', spot_obj.name)
             playlist_labels = [all_playlists[playlist_id].name for playlist_id in spot_obj.playlistIds]
 
             spot_text_to_encode = (
@@ -33,6 +35,7 @@ async def select_spots_endpoint(preferences: UserPreferences):
             spot_obj.embedding = get_embedding(spot_text_to_encode)
             await update_spot_embedding_in_db(spot_obj.id, spot_obj.embedding)
 
+        print('Computing similarity for spot: ', spot_obj.name)
         similarity = cosine_similarity(user_emb, spot_obj.embedding)
         normalized_popularity = min(spot_obj.score / 2_500_000, 1.0)
         final_score = 0.8 * similarity + 0.2 * normalized_popularity
