@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 from datetime import datetime
 from google.cloud.firestore import GeoPoint
+from google.cloud.firestore_v1.vector import Vector
 
 
 class TravelCompanion(str, Enum):
@@ -147,10 +148,18 @@ class SpotBase(BaseModel):
 
 class Spot(SpotBase):
     id: str
+    embedding: Optional[Vector] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
         arbitrary_types_allowed = True
+
+class Playlist(BaseModel):
+    id: str
+    imageGreen: str
+    imagePath: str
+    name: str
+    priority: int
 
 
 class UserEmbedding(BaseModel):

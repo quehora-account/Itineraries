@@ -1,9 +1,9 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
-from app.models import Spot, SpotBase
+from app.models import Spot, SpotBase, Playlist
 from app.core.config import settings
 from typing import List, Optional
-from fastapi import HTTPException
+from google.cloud.firestore_v1.vector import Vector
 
 if not firebase_admin._apps:
     cred = credentials.Certificate("./hoora-fb944-firebase-adminsdk-hykdj-96b7eea9ff.json")
@@ -13,8 +13,6 @@ store = firestore.client()
 
 
 async def get_spot_from_db(spot_id: str) -> Optional[Spot]:
-    if not store:
-        return None
     doc_ref = store.collection(settings.SPOTS_COLLECTION).document(spot_id)
     doc = await doc_ref.get()
     if doc.exists:
@@ -25,29 +23,31 @@ async def get_spot_from_db(spot_id: str) -> Optional[Spot]:
 
 
 async def get_all_spots_from_db() -> List[Spot]:
-    if not store:
-        return []
     spots_list = []
 
     docs_snapshot = store.collection(settings.SPOTS_COLLECTION).get()
     for doc in docs_snapshot:
         spot_data = doc.to_dict()
+        spot_data.pop("embedding", None)
         spot_data["id"] = doc.id
         spots_list.append(Spot(**spot_data))
     return spots_list
 
+async def get_all_playlists_from_db() -> List[Playlist]:
+    playlists_list = []
+    docs_snapshot = store.collection(settings.PLAYLISTS_COLLECTION).get()
+    for doc in docs_snapshot:
+        playlist_data = doc.to_dict()
+        playlist_data["id"] = doc.id
+        playlists_list.append(Playlist(**playlist_data))
+    return playlists_list
 
 async def add_spot_to_db(spot_data: SpotBase) -> Spot:
-    if not store:
-        raise HTTPException(status_code=503, detail="Firestore not available")
-
     doc_ref = store.collection(settings.SPOTS_COLLECTION).document()
     await doc_ref.set(spot_data.model_dump())
     return Spot(id=doc_ref.id, **spot_data.model_dump())
 
 
-async def update_spot_embedding_in_db(spot_id: str, embedding: List[float]):
-    if not store:
-        return
+async def update_spot_embedding_in_db(spot_id: str, embedding: Optional[Vector]):
     doc_ref = store.collection(settings.SPOTS_COLLECTION).document(spot_id)
-    await doc_ref.update({"embedding": embedding})
+    doc_ref.update({"embedding": embedding})

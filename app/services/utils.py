@@ -11,6 +11,7 @@ from app.models import (
 from typing import List, Dict, Tuple
 from openai import OpenAI
 from app.core.config import settings
+from google.cloud.firestore_v1.vector import Vector
 
 DEFAULT_TRANSPORT_MOYEN_MIN = 30
 LUNCH_DURATION_MIN = 90
@@ -19,7 +20,7 @@ client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
 def get_embedding(
     text: str
-) -> List[float]:
+) -> Vector:
     response = client.embeddings.create(
         input=text,
         model="text-embedding-3-small",
@@ -27,7 +28,7 @@ def get_embedding(
     return response.data[0].embedding
 
 
-def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+def cosine_similarity(vec1: Vector, vec2: Vector) -> float:
     if len(vec1) != len(vec2) or not vec1 or not vec2:
         return 0.0
     dot_product = sum(p * q for p, q in zip(vec1, vec2))
