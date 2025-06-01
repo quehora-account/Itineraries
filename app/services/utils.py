@@ -81,42 +81,6 @@ def minutes_to_time_str(minutes: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
-def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 6371
-    lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
-    lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
-    dlon = lon2_rad - lon1_rad
-    dlat = lat2_rad - lat1_rad
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
-    )
-    c = 2 * math.asin(math.sqrt(a))
-    return R * c
-
-
-def calculate_travel_time_min(distance_km: float, mode: TravelMode) -> int:
-    if mode == TravelMode.WALK:
-        return math.ceil(distance_km * 12)
-    elif mode == TravelMode.TRANSPORT:
-        return math.ceil(distance_km * 4)
-    return 0
-
-
-def get_travel_mode_and_time(
-    spot_from: Spot, spot_to: Spot, max_walk_time_min: int
-) -> Tuple[TravelMode, int]:
-    distance_km = haversine_distance_km(
-        spot_from.latitude, spot_from.longitude, spot_to.latitude, spot_to.longitude
-    )
-    walk_time = calculate_travel_time_min(distance_km, TravelMode.WALK)
-    if walk_time <= max_walk_time_min:
-        return TravelMode.WALK, walk_time
-    else:
-        transport_time = calculate_travel_time_min(distance_km, TravelMode.TRANSPORT)
-        return TravelMode.TRANSPORT, transport_time
-
-
 def normalize_score(
     value: float, min_val: float, max_val: float, scale_to: float = 100.0
 ) -> float:

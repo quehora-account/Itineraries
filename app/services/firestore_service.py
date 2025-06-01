@@ -13,9 +13,9 @@ if not firebase_admin._apps:
 store = firestore.client()
 
 
-async def get_spot_from_db(spot_id: str) -> Optional[Spot]:
+def get_spot_from_db(spot_id: str) -> Optional[Spot]:
     doc_ref = store.collection(settings.SPOTS_COLLECTION).document(spot_id)
-    doc = await doc_ref.get()
+    doc = doc_ref.get()
     if doc.exists:
         spot_data = doc.to_dict()
         spot_data["id"] = doc.id
@@ -28,7 +28,7 @@ async def get_spot_from_db(spot_id: str) -> Optional[Spot]:
     return None
 
 
-async def get_all_spots_from_db() -> List[Spot]:
+def get_all_spots_from_db() -> List[Spot]:
     spots_list = []
 
     docs_snapshot = store.collection(settings.SPOTS_COLLECTION).get()
@@ -43,7 +43,7 @@ async def get_all_spots_from_db() -> List[Spot]:
         spots_list.append(Spot(**spot_data))
     return spots_list
 
-async def get_all_playlists_from_db() -> List[Playlist]:
+def get_all_playlists_from_db() -> List[Playlist]:
     playlists_list = []
     docs_snapshot = store.collection(settings.PLAYLISTS_COLLECTION).get()
     for doc in docs_snapshot:

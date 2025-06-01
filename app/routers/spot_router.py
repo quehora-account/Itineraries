@@ -24,7 +24,7 @@ async def select_spots_endpoint(preferences: UserPreferences):
 
     matched_spots_list = []
     for spot_obj in all_spots:
-        if True or spot_obj.embedding is None:
+        if spot_obj.embedding is None:
             print('Computing embedding for spot: ', spot_obj.name)
             playlist_labels = [all_playlists[playlist_id].name for playlist_id in spot_obj.playlistIds]
 
@@ -49,6 +49,7 @@ async def select_spots_endpoint(preferences: UserPreferences):
             )
         )
 
+    print("Sorting spots")
     top_spots = sorted(matched_spots_list, key=lambda x: x.final_score, reverse=True)[
         : 15 * len(preferences.travel_dates)
     ]

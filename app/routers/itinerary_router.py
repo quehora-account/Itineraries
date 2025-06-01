@@ -10,10 +10,10 @@ from app.models import (
 from app.services.utils import (
     time_str_to_minutes,
     get_adjusted_visit_duration,
-    get_travel_mode_and_time,
     LUNCH_DURATION_MIN,
     DEFAULT_TRANSPORT_MOYEN_MIN,
 )
+from app.services.distance import get_travel_mode_and_time
 from app.services.firestore_service import get_spot_from_db
 from typing import List
 

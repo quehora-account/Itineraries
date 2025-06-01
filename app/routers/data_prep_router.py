@@ -17,8 +17,6 @@ from app.models import (
     SolverDepotInfo,
 )
 from app.services.utils import (
-    get_travel_mode_and_time,
-    haversine_distance_km,
     normalize_score,
     simulate_get_city_weather_data,
     calculate_crowd_score_brut,
@@ -26,21 +24,22 @@ from app.services.utils import (
     get_adjusted_visit_duration,
     LUNCH_DURATION_MIN,
 )
-from app.services.firestore_service import get_spot_from_db
+from app.services.firestore_service import get_spot_from_db, get_all_spots_from_db
+from app.services.distance import get_distance_matrix
 from typing import Dict, Union
 
 data_prep_router = APIRouter(prefix="/prepare", tags=["Data Preparation"])
 
 
 @data_prep_router.post(
-    "/distance-matrices", response_model=Tuple[MatrixTime, MatrixScoreDistance]
-)  # Using DataPrepMatrixTime etc.
-async def prepare_distance_matrices_endpoint(
+    "/get-distance", response_model=Tuple[MatrixTime, MatrixScoreDistance]
+) 
+def get_distance_endpoint(
     spot_ids: List[str], max_walk_time_per_segment_min: int = 30
 ):
     spots_to_process = []
     for sid in spot_ids:
-        spot = await get_spot_from_db(sid)  # dp_get_spot_from_db
+        spot = get_spot_from_db(sid)
         if spot:
             spots_to_process.append(spot)
 
@@ -49,36 +48,22 @@ async def prepare_distance_matrices_endpoint(
             status_code=400, detail="No valid spot IDs provided or spots not found."
         )
 
-    matrix_time_segments = {}
-    raw_distances_km = {}
-    for i in range(len(spots_to_process)):
-        for j in range(len(spots_to_process)):
-            if i == j:
-                continue
-            spot_a, spot_b = spots_to_process[i], spots_to_process[j]
-            key = f"{spot_a.id}-{spot_b.id}"
-            mode, time_min = get_travel_mode_and_time(
-                spot_a, spot_b, max_walk_time_per_segment_min
-            )  # util_dp_get_travel_mode
-            matrix_time_segments[key] = TravelSegment(
-                duree=time_min, type=mode
-            )  # DataPrepTravelSegment, DataPrepTravelMode
-            raw_distances_km[key] = haversine_distance_km(
-                spot_a.latitude, spot_a.longitude, spot_b.latitude, spot_b.longitude
-            )  # util_dp_haversine
+    return get_distance_matrix(spots_to_process, max_walk_time_per_segment_min)
 
-    matrix_score_distance_scores = {}
-    if raw_distances_km:
-        d_min, d_max = min(raw_distances_km.values()), max(raw_distances_km.values())
-        for key, dist_km in raw_distances_km.items():
-            matrix_score_distance_scores[key] = normalize_score(
-                dist_km, d_min, d_max
-            )  # util_dp_normalize
 
-    return MatrixTime(segments=matrix_time_segments), MatrixScoreDistance(
-        scores=matrix_score_distance_scores
-    )
-
+@data_prep_router.post(
+    "/compute-all-distances", response_model=CityWeatherData
+)
+def compute_all_distances_endpoint(
+    max_walk_time_per_segment_min: int = 30
+):
+    print(f"Computing all distances with max_walk_time_per_segment_min: {max_walk_time_per_segment_min}")
+    spots = get_all_spots_from_db()
+    print(f"Found {len(spots)} spots")
+    matrix_time, matrix_score_distance = get_distance_matrix(spots, max_walk_time_per_segment_min)
+    print(f"Matrix time: {matrix_time}")
+    print(f"Matrix score distance: {matrix_score_distance}")
+    return matrix_time, matrix_score_distance
 
 @data_prep_router.post(
     "/weather-data", response_model=CityWeatherData
