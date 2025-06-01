@@ -81,7 +81,7 @@ def normalize_score(
         return scale_to / 2
     return ((value - min_val) / (max_val - min_val)) * scale_to
 
-def calculate_crowd_score_brut(popular_time: int, density_index: int) -> float:
+def get_affluence_score(popular_time: int, density_index: int) -> float:
     if not (0 <= popular_time <= 100):
         popular_time = 50
     coefficient = density_index * 0.2

@@ -18,9 +18,9 @@ from app.models import (
 )
 from app.services.utils import (
     normalize_score,
-    calculate_crowd_score_brut,
     time_str_to_minutes,
     get_adjusted_visit_duration,
+    get_affluence_score,
     LUNCH_DURATION_MIN,
 )
 from app.services.weather import get_city_weather_data
@@ -80,13 +80,13 @@ async def prepare_weather_data_endpoint_new(
     )  
 
 
-@data_prep_router.post("/crowd-score-brut", response_model=float)
-async def calculate_crowd_score_brut_endpoint_new(
+@data_prep_router.post("/affluence", response_model=float)
+async def get_affluence_score_endpoint(
     data: CrowdScoreInput,
-):  # DataPrepCrowdScoreInput
-    return calculate_crowd_score_brut(
+):  
+    return get_affluence_score(
         data.popular_time, data.density_index
-    )  # util_dp_calc_crowd
+    )  
 
 
 @data_prep_router.post(
