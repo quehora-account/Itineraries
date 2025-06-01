@@ -18,7 +18,7 @@ from app.models import (
 )
 from app.services.utils import (
     normalize_score,
-    simulate_get_city_weather_data,
+    get_city_weather_data,
     calculate_crowd_score_brut,
     time_str_to_minutes,
     get_adjusted_visit_duration,
@@ -67,7 +67,7 @@ def compute_all_distances_endpoint(
 
 @data_prep_router.post(
     "/weather-data", response_model=CityWeatherData
-)  # DataPrepCityWeatherData
+)  
 async def prepare_weather_data_endpoint_new(
     city: str,
     travel_dates: List[str],
@@ -75,9 +75,9 @@ async def prepare_weather_data_endpoint_new(
 ):
     if not travel_dates:
         raise HTTPException(status_code=400, detail="Travel dates must be provided.")
-    return simulate_get_city_weather_data(
+    return get_city_weather_data(
         city, travel_dates, daily_hours_range
-    )  # util_dp_simulate_weather
+    )  
 
 
 @data_prep_router.post("/crowd-score-brut", response_model=float)

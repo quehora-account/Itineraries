@@ -1,5 +1,7 @@
 import math
 import random
+import requests
+from datetime import datetime
 from app.models import (
     VisitPace,
     Spot,
@@ -161,7 +163,20 @@ def calculate_raw_weather_score(
     return 100 - ((temp_comfort + precip_comfort + wind_comfort) / 3.0)
 
 
-def simulate_get_city_weather_data(
+def get_city_coordinates(city: str) -> Tuple[float, float]:
+    """Get latitude and longitude for a city using Open-Meteo Geocoding API."""
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
+    response = requests.get(url)
+    data = response.json()
+    
+    if not data.get("results"):
+        raise ValueError(f"Could not find coordinates for city: {city}")
+    
+    result = data["results"][0]
+    return result["latitude"], result["longitude"]
+
+
+def get_city_weather_data(
     city: str, dates: List[str], hours_range: Tuple[str, str]
 ) -> CityWeatherData:
     weather_by_date_dict = {}
@@ -170,17 +185,81 @@ def simulate_get_city_weather_data(
     all_raw_scores = []
     hourly_data_for_norm_stage: Dict[str, Dict[str, WeatherHourlyData]] = {}
 
+    # Get city coordinates
+    lat, lon = get_city_coordinates(city)
+    
+    # Convert dates to datetime objects for API
+    start_date = datetime.strptime(dates[0], "%Y-%m-%d")
+    end_date = datetime.strptime(dates[-1], "%Y-%m-%d")
+    
+    # Fetch weather data from Open-Meteo
+    url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        f"&hourly=temperature_2m,precipitation_probability,wind_speed_10m,weathercode"
+        f"&start_date={start_date.strftime('%Y-%m-%d')}"
+        f"&end_date={end_date.strftime('%Y-%m-%d')}"
+        f"&timezone=auto"
+    )
+    
+    response = requests.get(url)
+    data = response.json()
+    
+    # Process the hourly data
+    hourly_data = data["hourly"]
+    times = hourly_data["time"]
+    temperatures = hourly_data["temperature_2m"]
+    precipitations = hourly_data["precipitation_probability"]
+    wind_speeds = hourly_data["wind_speed_10m"]
+    weather_codes = hourly_data["weathercode"]
+    
+    # Weather code to summary and emoji mapping
+    weather_mapping = {
+        0: ("Clear", "☀️"),
+        1: ("Partly Cloudy", "🌤️"),
+        2: ("Cloudy", "☁️"),
+        3: ("Overcast", "☁️"),
+        45: ("Foggy", "🌫️"),
+        48: ("Foggy", "🌫️"),
+        51: ("Light Drizzle", "🌧️"),
+        53: ("Drizzle", "🌧️"),
+        55: ("Heavy Drizzle", "🌧️"),
+        61: ("Light Rain", "🌧️"),
+        63: ("Rain", "🌧️"),
+        65: ("Heavy Rain", "🌧️"),
+        71: ("Light Snow", "🌨️"),
+        73: ("Snow", "🌨️"),
+        75: ("Heavy Snow", "🌨️"),
+        77: ("Snow Grains", "🌨️"),
+        80: ("Light Showers", "🌧️"),
+        81: ("Showers", "🌧️"),
+        82: ("Heavy Showers", "🌧️"),
+        85: ("Light Snow Showers", "🌨️"),
+        86: ("Heavy Snow Showers", "🌨️"),
+        95: ("Thunderstorm", "⛈️"),
+        96: ("Thunderstorm with Light Hail", "⛈️"),
+        99: ("Thunderstorm with Heavy Hail", "⛈️"),
+    }
+
     for date_str in dates:
         hourly_data_dict = {}
-        for hour_int in range(
-            start_hour, end_hour + 1
-        ):  # Assuming end_hour is inclusive
+        for hour_int in range(start_hour, end_hour + 1):
             hour_key = f"{hour_int:02d}"
-            temp_c, precip_mm_or_percent, wind_kmh = (
-                random.uniform(5, 30),
-                random.uniform(0, 100),
-                random.uniform(0, 35),
-            )
+            
+            # Find the corresponding index in the API response
+            target_time = f"{date_str}T{hour_key}:00"
+            if target_time not in times:
+                continue
+                
+            idx = times.index(target_time)
+            
+            temp_c = temperatures[idx]
+            precip_mm_or_percent = precipitations[idx]
+            wind_kmh = wind_speeds[idx]
+            weather_code = weather_codes[idx]
+            
+            summary, emoji = weather_mapping.get(weather_code, ("Unknown", "❓"))
+            
             temp_comfort, precip_comfort, wind_comfort = get_weather_comfort_scores(
                 temp_c, precip_mm_or_percent, wind_kmh
             )
@@ -188,17 +267,19 @@ def simulate_get_city_weather_data(
                 temp_comfort, precip_comfort, wind_comfort
             )
             all_raw_scores.append(raw_score)
+            
             hourly_data_dict[hour_key] = WeatherHourlyData(
                 temp_c=temp_c,
                 precipitation_mm=precip_mm_or_percent,
                 wind_kmh=wind_kmh,
-                summary=random.choice(["Clear", "Cloudy", "Rain"]),
-                emoji=random.choice(["☀️", "☁️", "🌧️"]),
+                summary=summary,
+                emoji=emoji,
                 temp_comfort_score=temp_comfort,
                 precip_comfort_score=precip_comfort,
                 wind_comfort_score=wind_comfort,
                 raw_weather_score=raw_score,
             )
+            
         weather_by_date_dict[date_str] = WeatherForDate(hourly_data=hourly_data_dict)
         hourly_data_for_norm_stage[date_str] = hourly_data_dict
 
@@ -217,6 +298,7 @@ def simulate_get_city_weather_data(
                     )
                 )
                 weather_by_date_dict[date_str].hourly_data[hour_key] = data_entry
+                
     return CityWeatherData(city=city, weather_by_date=weather_by_date_dict)
 
 
