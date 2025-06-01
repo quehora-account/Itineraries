@@ -18,12 +18,12 @@ from app.models import (
 )
 from app.services.utils import (
     normalize_score,
-    get_city_weather_data,
     calculate_crowd_score_brut,
     time_str_to_minutes,
     get_adjusted_visit_duration,
     LUNCH_DURATION_MIN,
 )
+from app.services.weather import get_city_weather_data
 from app.services.firestore_service import get_spot_from_db, get_all_spots_from_db
 from app.services.distance import get_distance_matrix
 from typing import Dict, Union
