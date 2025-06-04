@@ -18,7 +18,7 @@ async def select_spots_endpoint(preferences: UserPreferences):
     pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.inspiring_activity_types)}, Pace: {preferences.visit_pace.value}"
     user_emb = get_embedding(pref_text)
 
-    all_playlists_list = await get_all_playlists_from_db()
+    all_playlists_list = get_all_playlists_from_db()
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
 
     all_spots = await get_all_spots_from_db()
@@ -61,7 +61,7 @@ async def compute_spot_embedding(spot_id: str):
         raise HTTPException(status_code=404, detail="Spot not found")
 
     # Fetch playlists for label enrichment
-    all_playlists_list = await get_all_playlists_from_db()
+    all_playlists_list = get_all_playlists_from_db()
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
     playlist_labels = [
         all_playlists[playlist_id].name
