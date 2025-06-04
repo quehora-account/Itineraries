@@ -25,7 +25,11 @@ from app.services.utils import (
 )
 from app.services.weather import get_city_weather_data
 from app.services.firestore_service import get_spot_from_db, get_all_spots_from_db
-from app.services.distance import get_distance_matrix
+from app.services.distance import (
+    get_distance_matrix,
+    get_travel_mode_and_time,
+    haversine_distance_km,
+)
 from typing import Dict, Union
 
 data_prep_router = APIRouter(prefix="/prepare", tags=["Data Preparation"])
@@ -33,10 +37,8 @@ data_prep_router = APIRouter(prefix="/prepare", tags=["Data Preparation"])
 
 @data_prep_router.post(
     "/get-distance", response_model=Tuple[MatrixTime, MatrixScoreDistance]
-) 
-def get_distance_endpoint(
-    spot_ids: List[str], max_walk_time_per_segment_min: int = 30
-):
+)
+def get_distance_endpoint(spot_ids: List[str], max_walk_time_per_segment_min: int = 30):
     spots_to_process = []
     for sid in spot_ids:
         spot = get_spot_from_db(sid)
@@ -51,23 +53,22 @@ def get_distance_endpoint(
     return get_distance_matrix(spots_to_process, max_walk_time_per_segment_min)
 
 
-@data_prep_router.post(
-    "/compute-all-distances", response_model=CityWeatherData
-)
-def compute_all_distances_endpoint(
-    max_walk_time_per_segment_min: int = 30
-):
-    print(f"Computing all distances with max_walk_time_per_segment_min: {max_walk_time_per_segment_min}")
+@data_prep_router.post("/compute-all-distances", response_model=CityWeatherData)
+def compute_all_distances_endpoint(max_walk_time_per_segment_min: int = 30):
+    print(
+        f"Computing all distances with max_walk_time_per_segment_min: {max_walk_time_per_segment_min}"
+    )
     spots = get_all_spots_from_db()
     print(f"Found {len(spots)} spots")
-    matrix_time, matrix_score_distance = get_distance_matrix(spots, max_walk_time_per_segment_min)
+    matrix_time, matrix_score_distance = get_distance_matrix(
+        spots, max_walk_time_per_segment_min
+    )
     print(f"Matrix time: {matrix_time}")
     print(f"Matrix score distance: {matrix_score_distance}")
     return matrix_time, matrix_score_distance
 
-@data_prep_router.post(
-    "/weather-data", response_model=CityWeatherData
-)  
+
+@data_prep_router.post("/weather-data", response_model=CityWeatherData)
 async def prepare_weather_data_endpoint_new(
     city: str,
     travel_dates: List[str],
@@ -75,30 +76,22 @@ async def prepare_weather_data_endpoint_new(
 ):
     if not travel_dates:
         raise HTTPException(status_code=400, detail="Travel dates must be provided.")
-    return get_city_weather_data(
-        city, travel_dates, daily_hours_range
-    )  
+    return get_city_weather_data(city, travel_dates, daily_hours_range)
 
 
 @data_prep_router.post("/affluence", response_model=float)
 async def get_affluence_score_endpoint(
     data: CrowdScoreInput,
-):  
-    return get_affluence_score(
-        data.popular_time, data.density_index
-    )  
+):
+    return get_affluence_score(data.popular_time, data.density_index)
 
 
-@data_prep_router.post(
-    "/all-solver-data", response_model=PreparedSolverData
-)  # DataPrepPreparedSolverData
+@data_prep_router.post("/all-solver-data", response_model=PreparedSolverData)
 async def prepare_all_solver_data_endpoint_new(
-    selected_spot_ids: List[str],  # DataPrepList
-    preferences: UserPreferences,  # DataPrepUserPreferences
-    mode: OptimizationMode = OptimizationMode.FREEMIUM,  # DataPrepOptimizationMode
-    weights: Optional[
-        SolverInputWeights
-    ] = None,  # DataPrepOptional, DataPrepSolverInputWeights
+    selected_spot_ids: List[str],
+    preferences: UserPreferences,
+    mode: OptimizationMode = OptimizationMode.FREEMIUM,
+    weights: Optional[SolverInputWeights] = None,
 ):
     if not selected_spot_ids:
         raise HTTPException(status_code=400, detail="No spots selected.")
@@ -106,7 +99,7 @@ async def prepare_all_solver_data_endpoint_new(
     if not (1 <= num_vehicles <= 3):
         raise HTTPException(status_code=400, detail="Days must be 1-3.")
 
-    user_windows_list: List[UserWindow] = []  # DataPrepUserWindow
+    user_windows_list: List[UserWindow] = []
     cumulative_minute_offset = 0
     for i, date_str in enumerate(preferences.travel_dates):
         if date_str not in preferences.hourly_availability:
@@ -116,7 +109,7 @@ async def prepare_all_solver_data_endpoint_new(
         start_str, end_str = preferences.hourly_availability[date_str]
         start_min, end_min = time_str_to_minutes(start_str), time_str_to_minutes(
             end_str
-        )  # util_dp_time_to_min
+        )
         user_windows_list.append(
             UserWindow(
                 vehicle=i,
@@ -134,7 +127,7 @@ async def prepare_all_solver_data_endpoint_new(
     lunch_indices: Dict[str, str] = {}
     solver_locations: List[Union[SolverSpotInfo, SolverLunchInfo, SolverDepotInfo]] = [
         SolverDepotInfo()
-    ]  # DataPrepSolverSpotInfo etc.
+    ]
 
     cumulative_offset_day_specific = 0
     for i, date_str in enumerate(preferences.travel_dates):
@@ -147,7 +140,7 @@ async def prepare_all_solver_data_endpoint_new(
             preferences.lunch_break_required
             and day_start_local <= lunch_start_w_min
             and day_end_local >= (lunch_start_w_min + LUNCH_DURATION_MIN)
-        ):  # UTIL_DP_LUNCH_DUR
+        ):
             actual_lunch_start = max(day_start_local, lunch_start_w_min)
             actual_lunch_end = min(day_end_local - LUNCH_DURATION_MIN, lunch_end_w_max)
             if actual_lunch_start <= actual_lunch_end:
@@ -166,10 +159,10 @@ async def prepare_all_solver_data_endpoint_new(
                         time_windows=lunch_node_time_window_cumulative,
                         dur=LUNCH_DURATION_MIN,
                     )
-                )  # UTIL_DP_LUNCH_DUR
+                )
         cumulative_offset_day_specific += 24 * 60
 
-    city_weather = simulate_get_city_weather_data(
+    city_weather = get_city_weather_data(
         preferences.destination, preferences.travel_dates, ("00:00", "23:00")
     )
     weather_score_hour_cum: Dict[int, float] = {}
@@ -185,14 +178,10 @@ async def prepare_all_solver_data_endpoint_new(
                     ] = hourly_d.normalized_weather_score
         current_cum_min_offset += 24 * 60
 
-    # Simplified matrix generation for all nodes (depot, spots, lunches)
     all_node_ids_for_matrices = (
         ["depot"] + selected_spot_ids + list(lunch_indices.values())
     )
-    # This is a placeholder. A full implementation would fetch all spots involved, including depot/lunch representations if they have coords.
-    # For now, use spot-to-spot and augment.
 
-    # Fetch spot objects for matrix calculation
     db_spot_objects = {sid: await get_spot_from_db(sid) for sid in selected_spot_ids}
     valid_db_spot_objects = [s for s in db_spot_objects.values() if s]
 
@@ -200,7 +189,6 @@ async def prepare_all_solver_data_endpoint_new(
     final_matrix_score_distance_scores = {}
 
     if valid_db_spot_objects:
-        # Calculate spot-to-spot first
         temp_raw_distances = {}
         for i_idx in range(len(valid_db_spot_objects)):
             for j_idx in range(len(valid_db_spot_objects)):
@@ -215,7 +203,10 @@ async def prepare_all_solver_data_endpoint_new(
                     duree=time_val, type=mode
                 )
                 temp_raw_distances[key] = haversine_distance_km(
-                    s_a.latitude, s_a.longitude, s_b.latitude, s_b.longitude
+                    s_a.coordinates.latitude,
+                    s_a.coordinates.longitude,
+                    s_b.coordinates.latitude,
+                    s_b.coordinates.longitude,
                 )
 
         if temp_raw_distances:
@@ -227,16 +218,12 @@ async def prepare_all_solver_data_endpoint_new(
                     dist_v, d_min_val, d_max_val
                 )
 
-    # Augment for depot and lunch (simplified: 0 cost/time)
     for node_id_outer in all_node_ids_for_matrices:
         for node_id_inner in all_node_ids_for_matrices:
             if node_id_outer == node_id_inner:
                 continue
             key = f"{node_id_outer}-{node_id_inner}"
-            if (
-                key not in final_matrix_time_segments
-            ):  # Avoid overwriting existing spot-spot
-                # Depot or lunch connections
+            if key not in final_matrix_time_segments:
                 if (
                     node_id_outer == "depot"
                     or node_id_inner == "depot"
@@ -280,9 +267,7 @@ async def prepare_all_solver_data_endpoint_new(
                 ), time_str_to_minutes(user_e_str)
                 for hour_loc, pop_score in spot.popular_times_hourly.items():
                     if user_s_min <= hour_loc * 60 < user_e_min:
-                        crowd_s = calculate_crowd_score_brut(
-                            pop_score, spot.density_index
-                        )
+                        crowd_s = get_affluence_score(pop_score, spot.density_index)
                         crowd_hour_data_cum[day_offset_crowd + (hour_loc * 60)] = (
                             crowd_s
                         )

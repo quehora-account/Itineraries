@@ -7,7 +7,9 @@ from google.cloud.firestore_v1.vector import Vector
 from google.cloud.firestore_v1._helpers import GeoPoint as FirestoreGeoPoint
 
 if not firebase_admin._apps:
-    cred = credentials.Certificate("./hoora-fb944-firebase-adminsdk-hykdj-96b7eea9ff.json")
+    cred = credentials.Certificate(
+        "./hoora-fb944-firebase-adminsdk-hykdj-96b7eea9ff.json"
+    )
     firebase_admin.initialize_app(cred)
 
 store = firestore.client()
@@ -22,7 +24,7 @@ def get_spot_from_db(spot_id: str) -> Optional[Spot]:
         if isinstance(spot_data.get("coordinates"), FirestoreGeoPoint):
             spot_data["coordinates"] = GeoPoint(
                 latitude=spot_data["coordinates"].latitude,
-                longitude=spot_data["coordinates"].longitude
+                longitude=spot_data["coordinates"].longitude,
             )
         return Spot(**spot_data)
     return None
@@ -38,10 +40,11 @@ def get_all_spots_from_db() -> List[Spot]:
         if isinstance(spot_data.get("coordinates"), FirestoreGeoPoint):
             spot_data["coordinates"] = GeoPoint(
                 latitude=spot_data["coordinates"].latitude,
-                longitude=spot_data["coordinates"].longitude
+                longitude=spot_data["coordinates"].longitude,
             )
         spots_list.append(Spot(**spot_data))
     return spots_list
+
 
 def get_all_playlists_from_db() -> List[Playlist]:
     playlists_list = []
@@ -51,6 +54,7 @@ def get_all_playlists_from_db() -> List[Playlist]:
         playlist_data["id"] = doc.id
         playlists_list.append(Playlist(**playlist_data))
     return playlists_list
+
 
 async def add_spot_to_db(spot_data: SpotBase) -> Spot:
     doc_ref = store.collection(settings.SPOTS_COLLECTION).document()

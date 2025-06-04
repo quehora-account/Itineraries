@@ -12,7 +12,6 @@ from app.services.firestore_service import (
 spots_router = APIRouter(prefix="/spots", tags=["Spot Selection"])
 
 
-
 @spots_router.post("/select", response_model=List[MatchedSpot])
 async def select_spots_endpoint(preferences: UserPreferences):
     print("Computing user embedding")
@@ -54,6 +53,7 @@ async def select_spots_endpoint(preferences: UserPreferences):
     ]
     return top_spots
 
+
 @spots_router.post("/{spot_id}/compute-embedding")
 async def compute_spot_embedding(spot_id: str):
     spot = get_spot_from_db(spot_id)
@@ -64,7 +64,9 @@ async def compute_spot_embedding(spot_id: str):
     all_playlists_list = await get_all_playlists_from_db()
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
     playlist_labels = [
-        all_playlists[playlist_id].name for playlist_id in spot.playlistIds if playlist_id in all_playlists
+        all_playlists[playlist_id].name
+        for playlist_id in spot.playlistIds
+        if playlist_id in all_playlists
     ]
     spot_text_to_encode = f"{spot.name}, {spot.description}, {spot.type}, {', '.join(spot.highlights)}, playlists: {', '.join(playlist_labels)}"
     embedding = get_embedding(spot_text_to_encode)

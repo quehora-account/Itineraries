@@ -7,7 +7,6 @@ from app.models import (
     UserPreferences,
     OptimizationMode,
     OptimizationScores,
-    TravelMode,
 )
 from app.services.utils import (
     time_str_to_minutes,
@@ -22,27 +21,25 @@ import random
 generation_router = APIRouter(prefix="/generate", tags=["Itinerary Generation"])
 
 
-@generation_router.post(
-    "/final-itinerary", response_model=FinalItineraryOutput
-)  # GenFinalOutput
+@generation_router.post("/final-itinerary", response_model=FinalItineraryOutput)
 async def generate_final_itinerary_endpoint(
-    ordered_spot_ids_per_day: Dict[str, List[str]],  # GenDict, GenList
-    preferences: UserPreferences,  # GenUserPrefs
-    optimization_mode: OptimizationMode = OptimizationMode.FREEMIUM,  # GenOptMode
+    ordered_spot_ids_per_day: Dict[str, List[str]],
+    preferences: UserPreferences,
+    optimization_mode: OptimizationMode = OptimizationMode.FREEMIUM,
 ):
-    final_days_itinerary: List[DailyItinerary] = []  # GenDailyItin
+    final_days_itinerary: List[DailyItinerary] = []
     day_counter = 1
 
     for date_str, spot_ids_for_day in ordered_spot_ids_per_day.items():
         if not spot_ids_for_day:
             continue
-        daily_steps: List[ItineraryStep] = []  # GenItinStep
+        daily_steps: List[ItineraryStep] = []
         current_time_min = time_str_to_minutes(
             preferences.hourly_availability[date_str][0]
-        )  # gen_time_to_min
+        )
 
         for i, spot_id in enumerate(spot_ids_for_day):
-            spot = await get_spot_from_db(spot_id)  # gen_get_spot
+            spot = await get_spot_from_db(spot_id)
             if not spot:
                 continue
             if i > 0:
@@ -50,7 +47,7 @@ async def generate_final_itinerary_endpoint(
                 if prev_spot:
                     mode, travel_dur = get_travel_mode_and_time(
                         prev_spot, spot, preferences.max_walk_time_per_segment_min
-                    )  # gen_get_travel
+                    )
                     daily_steps.append(
                         ItineraryStep(
                             type="travel",
@@ -59,13 +56,13 @@ async def generate_final_itinerary_endpoint(
                             mode=mode,
                             duration_min=travel_dur,
                         )
-                    )  # GenTravelMode
+                    )
                     current_time_min += travel_dur
 
-            visit_start = minutes_to_time_str(current_time_min)  # gen_min_to_time
+            visit_start = minutes_to_time_str(current_time_min)
             visit_dur = get_adjusted_visit_duration(
                 spot.standard_duration_min, preferences.visit_pace
-            )  # gen_get_adj_dur
+            )
             daily_steps.append(
                 ItineraryStep(
                     type="visit", id=spot.id, start=visit_start, duration_min=visit_dur
@@ -81,7 +78,7 @@ async def generate_final_itinerary_endpoint(
                 and (i < len(spot_ids_for_day) - 1)
                 and current_time_min + LUNCH_DURATION_MIN
                 < time_str_to_minutes(preferences.hourly_availability[date_str][1])
-            ):  # GEN_LUNCH_DUR
+            ):
                 daily_steps.append(
                     ItineraryStep(
                         type="visit",
@@ -109,10 +106,10 @@ async def generate_final_itinerary_endpoint(
         day_counter += 1
 
     opt_scores_obj = None
-    if optimization_mode == OptimizationMode.PREMIUM:  # GenOptMode
+    if optimization_mode == OptimizationMode.PREMIUM:
         opt_scores_obj = OptimizationScores(
             crowd=random.uniform(70, 95),
             weather=random.uniform(65, 90),
             distance=random.uniform(80, 98),
-        )  # GenOptScores
+        )
     return FinalItineraryOutput(days=final_days_itinerary, scores=opt_scores_obj)

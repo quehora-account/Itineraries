@@ -11,9 +11,8 @@ LUNCH_DURATION_MIN = 90
 
 client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
-def get_embedding(
-    text: str
-) -> Vector:
+
+def get_embedding(text: str) -> Vector:
     response = client.embeddings.create(
         input=text,
         model="text-embedding-3-small",
@@ -80,6 +79,7 @@ def normalize_score(
     if max_val == min_val:
         return scale_to / 2
     return ((value - min_val) / (max_val - min_val)) * scale_to
+
 
 def get_affluence_score(popular_time: int, density_index: int) -> float:
     if not (0 <= popular_time <= 100):

@@ -13,8 +13,8 @@ class Settings:
     APP_ID = os.getenv("APP_ID")
     MEASUREMENT_ID = os.getenv("MEASUREMENT_ID")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    SPOTS_COLLECTION = 'spot'
-    PLAYLISTS_COLLECTION = 'playlist'
+    SPOTS_COLLECTION = "spot"
+    PLAYLISTS_COLLECTION = "playlist"
 
 
 settings = Settings()

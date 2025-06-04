@@ -24,7 +24,7 @@ itinerary_router = APIRouter(prefix="/itinerary", tags=["Itinerary Planning"])
 async def calculate_time_gauge_for_day_endpoint(
     selected_spot_ids: List[str],
     day_date: str,
-    preferences: UserPreferences,  # Using aliased ItineraryUserPreferences
+    preferences: UserPreferences,
 ):
     if day_date not in preferences.hourly_availability:
         raise HTTPException(
@@ -34,7 +34,7 @@ async def calculate_time_gauge_for_day_endpoint(
     start_time_str, end_time_str = preferences.hourly_availability[day_date]
     total_day_minutes = time_str_to_minutes(end_time_str) - time_str_to_minutes(
         start_time_str
-    )  # util_time_str_to_minutes
+    )
 
     time_for_lunch = (
         LUNCH_DURATION_MIN
@@ -46,7 +46,7 @@ async def calculate_time_gauge_for_day_endpoint(
 
     available_for_visits_and_transport = total_day_minutes - time_for_lunch
     time_spent_min = 0
-    fitted_spots_for_day: List[Spot] = []  # Using aliased ItinerarySpot
+    fitted_spots_for_day: List[Spot] = []
 
     current_spots_objects = []
     for spot_id in selected_spot_ids:
@@ -57,13 +57,13 @@ async def calculate_time_gauge_for_day_endpoint(
     for i, spot_obj in enumerate(current_spots_objects):
         adjusted_duration = get_adjusted_visit_duration(
             spot_obj.standard_duration_min, preferences.visit_pace
-        )  # util_get_adjusted_visit_duration
+        )
         transport_to_this_spot_min = 0
         if fitted_spots_for_day:
             prev_spot = fitted_spots_for_day[-1]
             _, transport_to_this_spot_min = get_travel_mode_and_time(
                 prev_spot, spot_obj, preferences.max_walk_time_per_segment_min
-            )  # util_get_travel_mode_and_time
+            )
 
         potential_time_increase = adjusted_duration + transport_to_this_spot_min
         if (
@@ -81,8 +81,7 @@ async def calculate_time_gauge_for_day_endpoint(
         time_spent_min=time_spent_min,
         remaining_time_min=remaining_time,
         selected_spots_for_day=fitted_spots_for_day,
-        can_add_more=remaining_time
-        > 30,  # Heuristic: can add more if at least 30 mins left
+        can_add_more=remaining_time > 30,
     )
 
 
@@ -100,7 +99,7 @@ async def validate_user_selection_endpoint(request_data: ValidationRequest):
             and time_str_to_minutes(start_str) <= time_str_to_minutes("12:00")
             and time_str_to_minutes(end_str) >= time_str_to_minutes("14:00")
         ):
-            lunch_time_this_day = LUNCH_DURATION_MIN  # UTIL_LUNCH_DURATION
+            lunch_time_this_day = LUNCH_DURATION_MIN
         total_allocated_visit_time_min += daily_minutes - lunch_time_this_day
 
     nb_lieux = len(request_data.selected_spot_ids)
@@ -108,7 +107,7 @@ async def validate_user_selection_endpoint(request_data: ValidationRequest):
     current_total_duration_min = 0
 
     for spot_id in request_data.selected_spot_ids:
-        spot = await get_spot_from_db(spot_id)  # itinerary_get_spot_from_db
+        spot = await get_spot_from_db(spot_id)
         if spot:
             current_total_duration_min += get_adjusted_visit_duration(
                 spot.standard_duration_min, request_data.user_preferences.visit_pace
@@ -118,7 +117,7 @@ async def validate_user_selection_endpoint(request_data: ValidationRequest):
     if estimated_transport_slots > 0:
         current_total_duration_min += (
             estimated_transport_slots * DEFAULT_TRANSPORT_MOYEN_MIN
-        )  # UTIL_DEFAULT_TRANSPORT
+        )
 
     jauge_diff = total_allocated_visit_time_min - current_total_duration_min
     status_code, message = 0, ""

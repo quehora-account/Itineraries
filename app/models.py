@@ -3,9 +3,11 @@ from pydantic import BaseModel, Field
 from enum import Enum
 from datetime import datetime
 
+
 class GeoPoint(BaseModel):
     latitude: float
     longitude: float
+
 
 class TravelCompanion(str, Enum):
     SOLO = "solo"
@@ -140,6 +142,7 @@ class SpotBase(BaseModel):
             datetime: lambda v: v.isoformat(),
         }
 
+
 class Spot(SpotBase):
     id: str
     embedding: Optional[Sequence[float]] = None
@@ -150,6 +153,7 @@ class Spot(SpotBase):
         json_encoders = {
             datetime: lambda v: v.isoformat(),
         }
+
 
 class Playlist(BaseModel):
     id: str

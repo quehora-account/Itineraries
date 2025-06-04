@@ -5,6 +5,7 @@ from app.services.utils import normalize_score
 import osmnx as ox
 import networkx as nx
 
+
 def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371
     lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
@@ -31,7 +32,10 @@ def get_travel_mode_and_time(
     spot_from: Spot, spot_to: Spot, max_walk_time_min: int
 ) -> Tuple[TravelMode, int]:
     distance_km = haversine_distance_km(
-        spot_from.coordinates.latitude, spot_from.coordinates.longitude, spot_to.coordinates.latitude, spot_to.coordinates.longitude
+        spot_from.coordinates.latitude,
+        spot_from.coordinates.longitude,
+        spot_to.coordinates.latitude,
+        spot_to.coordinates.longitude,
     )
     walk_time = calculate_travel_time_min(distance_km, TravelMode.WALK)
     if walk_time <= max_walk_time_min:
@@ -41,7 +45,9 @@ def get_travel_mode_and_time(
         return TravelMode.TRANSPORT, transport_time
 
 
-def get_distance_matrix(spots: List[Spot], max_walk_time_per_segment_min: int) -> Tuple[MatrixTime, MatrixScoreDistance]:
+def get_distance_matrix(
+    spots: List[Spot], max_walk_time_per_segment_min: int
+) -> Tuple[MatrixTime, MatrixScoreDistance]:
     matrix_time_segments = {}
     raw_distances_km = {}
     real_distances_km = {}
@@ -54,40 +60,47 @@ def get_distance_matrix(spots: List[Spot], max_walk_time_per_segment_min: int) -
             mode, time_min = get_travel_mode_and_time(
                 spot_a, spot_b, max_walk_time_per_segment_min
             )
-            matrix_time_segments[key] = TravelSegment(
-                duree=time_min, type=mode
-            )
+            matrix_time_segments[key] = TravelSegment(duree=time_min, type=mode)
             raw_distances_km[key] = haversine_distance_km(
-                spot_a.coordinates.latitude, spot_a.coordinates.longitude, spot_b.coordinates.latitude, spot_b.coordinates.longitude
+                spot_a.coordinates.latitude,
+                spot_a.coordinates.longitude,
+                spot_b.coordinates.latitude,
+                spot_b.coordinates.longitude,
             )
 
             G = ox.graph_from_point(
                 (spot_a.coordinates.latitude, spot_a.coordinates.longitude),
                 dist=5000,  # 5km radius should be enough for most city distances
-                network_type="drive"
+                network_type="drive",
             )
-            
-            orig_node = ox.nearest_nodes(G, spot_a.coordinates.longitude, spot_a.coordinates.latitude)
-            dest_node = ox.nearest_nodes(G, spot_b.coordinates.longitude, spot_b.coordinates.latitude)
-            
+
+            orig_node = ox.nearest_nodes(
+                G, spot_a.coordinates.longitude, spot_a.coordinates.latitude
+            )
+            dest_node = ox.nearest_nodes(
+                G, spot_b.coordinates.longitude, spot_b.coordinates.latitude
+            )
+
             try:
                 route = nx.shortest_path(G, orig_node, dest_node, weight="length")
                 route_length = nx.path_weight(G, route, weight="length") / 1000
             except nx.NetworkXNoPath:
                 # If no path found, fallback to haversine distance
                 route_length = raw_distances_km[key]
-                
+
             real_distances_km[key] = route_length
-            print(f"Raw distance between {spot_a.id} and {spot_b.id}: {raw_distances_km[key]} km")
-            print(f"Real distance between {spot_a.id} and {spot_b.id}: {route_length} km")
+            print(
+                f"Raw distance between {spot_a.id} and {spot_b.id}: {raw_distances_km[key]} km"
+            )
+            print(
+                f"Real distance between {spot_a.id} and {spot_b.id}: {route_length} km"
+            )
 
     matrix_score_distance_scores = {}
     if raw_distances_km:
         d_min, d_max = min(raw_distances_km.values()), max(raw_distances_km.values())
         for key, dist_km in raw_distances_km.items():
-            matrix_score_distance_scores[key] = normalize_score(
-                dist_km, d_min, d_max
-            )
+            matrix_score_distance_scores[key] = normalize_score(dist_km, d_min, d_max)
 
     return MatrixTime(segments=matrix_time_segments), MatrixScoreDistance(
         scores=matrix_score_distance_scores
