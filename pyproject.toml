@@ -12,6 +12,7 @@ dependencies = [
     "firebase-admin>=6.8.0",
     "networkx>=3.5",
     "openai>=1.82.1",
+    "ortools>=9.12.4544",
     "osmnx>=2.0.3",
     "scikit-learn>=1.6.1",
     "uvicorn>=0.34.2",
