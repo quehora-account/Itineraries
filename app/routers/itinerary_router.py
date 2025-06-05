@@ -84,12 +84,18 @@ async def select_spots(
     spot_timings = []
     current_nb_lieux = 0
     current_day_index = 0
+    spots_per_day = {day['date']: 0 for day in daily_schedules}  # Track number of spots per day
     
     # Define lunch break constants
     LUNCH_START_MIN = time_str_to_minutes("12:00")  # 720 minutes (12:00)
     LUNCH_END_MIN = time_str_to_minutes("14:00")    # 840 minutes (14:00)
     
-    for spot_id in selected_spot_ids:
+    # First pass: Ensure at least one spot per day
+    for day_index, day in enumerate(daily_schedules):
+        if day_index >= len(selected_spot_ids):
+            break
+            
+        spot_id = selected_spot_ids[day_index]
         spot = get_spot_from_db(spot_id)
         if not spot:
             return HTTPException(status_code=404, detail=f"Spot with ID {spot_id} not found")
@@ -97,19 +103,56 @@ async def select_spots(
         if spot.embedding:
             del spot.embedding
             
-        # Parse visit duration from spot data
         standard_duration_min = parse_visit_duration_to_minutes(spot.visitDuration)
-        print(f"standard_duration_min: {standard_duration_min}")
+        visit_duration = get_adjusted_visit_duration(standard_duration_min, preferences.visit_pace)
         
-        # Calculate adjusted visit duration for this spot
-        visit_duration = get_adjusted_visit_duration(
-            standard_duration_min, preferences.visit_pace
-        )
+        # For first spot of the day, no transport time needed
+        total_spot_time = visit_duration
         
-        transport_time = 0
-        if current_nb_lieux >= nb_jours:
-            transport_time = DEFAULT_TRANSPORT_MOYEN_MIN
+        if total_spot_time <= day['remaining_time_min']:
+            current_day = day
+            current_day['current_time_min'] += 0  # No transport time for first spot
             
+            # Handle lunch break
+            visit_end_time = current_day['current_time_min'] + visit_duration
+            if (current_day['current_time_min'] < LUNCH_END_MIN and visit_end_time > LUNCH_START_MIN):
+                if current_day['current_time_min'] < LUNCH_END_MIN:
+                    current_day['current_time_min'] = LUNCH_END_MIN
+                    
+            arrival_time = minutes_to_time_str(current_day['current_time_min'])
+            departure_time_min = current_day['current_time_min'] + visit_duration
+            departure_time = minutes_to_time_str(departure_time_min)
+            
+            spot_timing = SpotTiming(
+                spot=spot,
+                date=current_day['date'],
+                arrival_time=arrival_time,
+                departure_time=departure_time,
+                visit_duration_min=visit_duration,
+                transport_time_min=0
+            )
+            
+            selected_spots.append(spot)
+            spot_timings.append(spot_timing)
+            current_day['remaining_time_min'] -= total_spot_time
+            current_nb_lieux += 1
+            current_day['current_time_min'] = departure_time_min
+            spots_per_day[current_day['date']] += 1
+    
+    # Second pass: Schedule remaining spots
+    remaining_spot_ids = selected_spot_ids[len(daily_schedules):]
+    for spot_id in remaining_spot_ids:
+        spot = get_spot_from_db(spot_id)
+        if not spot:
+            return HTTPException(status_code=404, detail=f"Spot with ID {spot_id} not found")
+
+        if spot.embedding:
+            del spot.embedding
+            
+        standard_duration_min = parse_visit_duration_to_minutes(spot.visitDuration)
+        visit_duration = get_adjusted_visit_duration(standard_duration_min, preferences.visit_pace)
+        
+        transport_time = DEFAULT_TRANSPORT_MOYEN_MIN
         total_spot_time = visit_duration + transport_time
         
         # Find a day that can accommodate this spot
@@ -119,27 +162,18 @@ async def select_spots(
         while days_tried < len(daily_schedules) and not spot_scheduled:
             current_day = daily_schedules[current_day_index]
             
-            # Check if this spot fits in the current day's remaining time
             if total_spot_time <= current_day['remaining_time_min']:
-                # Add transport time to current time (arrival at spot)
                 current_day['current_time_min'] += transport_time
                 
-                # Check if we're entering lunch break period and skip it if necessary
                 visit_end_time = current_day['current_time_min'] + visit_duration
-                
-                # If the visit would start during or extend into lunch break, skip to after lunch
                 if (current_day['current_time_min'] < LUNCH_END_MIN and visit_end_time > LUNCH_START_MIN):
-                    # If we're about to start during lunch or extend into lunch, skip to after lunch
                     if current_day['current_time_min'] < LUNCH_END_MIN:
                         current_day['current_time_min'] = LUNCH_END_MIN
                         
                 arrival_time = minutes_to_time_str(current_day['current_time_min'])
-                
-                # Calculate departure time
                 departure_time_min = current_day['current_time_min'] + visit_duration
                 departure_time = minutes_to_time_str(departure_time_min)
                 
-                # Create timing info with proper date
                 spot_timing = SpotTiming(
                     spot=spot,
                     date=current_day['date'],
@@ -154,13 +188,12 @@ async def select_spots(
                 current_day['remaining_time_min'] -= total_spot_time
                 current_nb_lieux += 1
                 current_day['current_time_min'] = departure_time_min
+                spots_per_day[current_day['date']] += 1
                 spot_scheduled = True
             else:
-                # Try next day
                 current_day_index = (current_day_index + 1) % len(daily_schedules)
                 days_tried += 1
         
-        # If we couldn't schedule this spot on any day, skip it
         if not spot_scheduled:
             continue
     
