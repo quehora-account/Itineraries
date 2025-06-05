@@ -34,20 +34,30 @@ class OptimizationMode(str, Enum):
 
 
 class UserPreferences(BaseModel):
-    destination: str
+    destination: str = Field(..., example="Paris")
     travel_dates: List[str] = Field(
-        ..., min_items=1, max_items=3, description="List of dates in YYYY-MM-DD format"
+        ..., 
+        min_items=1, 
+        max_items=3, 
+        description="List of dates in YYYY-MM-DD format",
+        example=["2024-07-10", "2024-07-25"]
     )
-    budget: Optional[str] = None
-    companions: TravelCompanion
-    has_children: bool
-    activity_types: List[str] = Field(..., max_items=3)
-    max_walk_time_per_segment_min: int = Field(default=30)
+    budget: Optional[str] = Field(None, example="250€")
+    companions: TravelCompanion = Field(..., example=TravelCompanion.COUPLE)
+    has_children: bool = Field(..., example=False)
+    activity_types: List[str] = Field(
+        ..., 
+        max_items=3,
+        example=["Culture", "Histoire"]
+    )
+    max_walk_time_per_segment_min: int = Field(default=30, example=30)
     hourly_availability: Dict[str, Tuple[str, str]] = Field(
-        ..., description="e.g., {'2025-07-15': ('09:00', '18:00')}"
+        ..., 
+        description="e.g., {'2025-07-15': ('09:00', '18:00')}",
+        example={"2024-07-15": ("09:00", "18:00")}
     )
-    visit_pace: VisitPace
-    lunch_break_required: bool = Field(default=True)
+    visit_pace: VisitPace = Field(..., example=VisitPace.BALANCED)
+    lunch_break_required: bool = Field(default=True, example=True)
 
 
 class SpotHighlight(BaseModel):

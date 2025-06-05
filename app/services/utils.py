@@ -1,4 +1,5 @@
 import math
+from typing import List
 from app.models import (
     VisitPace,
 )
@@ -11,6 +12,13 @@ LUNCH_DURATION_MIN = 90
 
 client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
+# Get embeddings in batch
+def get_embeddings_batch(texts: List[str]) -> List[Vector]:
+    response = client.embeddings.create(
+        input=texts,
+        model="text-embedding-3-small",
+    )
+    return [response.data[i].embedding for i in range(len(texts))]
 
 def get_embedding(text: str) -> Vector:
     response = client.embeddings.create(

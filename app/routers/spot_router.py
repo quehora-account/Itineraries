@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from typing import List
 from app.models import UserPreferences, MatchedSpot
-from app.services.utils import get_embedding, cosine_similarity
+from app.services.utils import get_embedding, cosine_similarity, get_embeddings_batch
 from app.services.firestore_service import (
     get_all_playlists_from_db,
     get_all_spots_from_db,
@@ -15,11 +15,11 @@ spots_router = APIRouter(prefix="/spots", tags=["Spot Selection"])
 @spots_router.post("/select", response_model=List[MatchedSpot])
 async def select_spots_endpoint(preferences: UserPreferences):
     all_playlists_list = get_all_playlists_from_db()
-    valid_activity_types = (playlist.name for playlist in all_playlists_list)
+    valid_activity_types = [playlist.name for playlist in all_playlists_list]
 
     for activity_type in preferences.activity_types:
         if activity_type not in valid_activity_types:
-            raise HTTPException(status_code=400, detail=f"Activity type {activity_type} is not valid")
+            raise HTTPException(status_code=400, detail=f"Activity type {activity_type} is not valid, valid activity types are: {valid_activity_types}")
 
     print("Computing user embedding")
     pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.activity_types)}, Pace: {preferences.visit_pace.value}"
@@ -27,20 +27,32 @@ async def select_spots_endpoint(preferences: UserPreferences):
 
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
 
+    print("Getting all spots")
     all_spots = get_all_spots_from_db()
 
-    matched_spots_list = []
+    # Collect spots that need embeddings
+    spots_to_update = []
+    spot_texts = []
     for spot_obj in all_spots:
         if spot_obj.embedding is None:
             playlist_labels = [
                 all_playlists[playlist_id].name for playlist_id in spot_obj.playlistIds
             ]
-
             spot_text_to_encode = f"{spot_obj.name}, {spot_obj.description}, {spot_obj.type}, {', '.join(spot_obj.highlights)}, playlists: {', '.join(playlist_labels)}"
+            spots_to_update.append(spot_obj)
+            spot_texts.append(spot_text_to_encode)
 
-            spot_obj.embedding = get_embedding(spot_text_to_encode)
-            await update_spot_embedding_in_db(spot_obj.id, spot_obj.embedding)
+    if spots_to_update:
+        print(f"Computing embeddings for {len(spots_to_update)} spots")
+        embeddings = get_embeddings_batch(spot_texts)
+        
+        # Update spots with their embeddings
+        for spot_obj, embedding in zip(spots_to_update, embeddings):
+            spot_obj.embedding = embedding
+            await update_spot_embedding_in_db(spot_obj.id, embedding)
 
+    matched_spots_list = []
+    for spot_obj in all_spots:
         similarity = cosine_similarity(user_emb, spot_obj.embedding)
         normalized_popularity = min(spot_obj.score / 2_500_000, 1.0)
         final_score = 0.8 * similarity + 0.2 * normalized_popularity
@@ -57,6 +69,10 @@ async def select_spots_endpoint(preferences: UserPreferences):
     top_spots = sorted(matched_spots_list, key=lambda x: x.final_score, reverse=True)[
         : 15 * len(preferences.travel_dates)
     ]
+
+    for spot in top_spots:
+        del spot.spot.embedding
+
     return top_spots
 
 
