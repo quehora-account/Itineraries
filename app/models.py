@@ -57,7 +57,6 @@ class UserPreferences(BaseModel):
         example={"2024-07-10": ("09:00", "18:00"), "2024-07-11": ("09:00", "18:00"), "2024-07-12": ("09:00", "14:00")}
     )
     visit_pace: VisitPace = Field(..., example=VisitPace.BALANCED)
-    lunch_break_required: bool = Field(default=True, example=True)
 
 
 class SpotHighlight(BaseModel):
@@ -176,12 +175,21 @@ class AdjustedVisitDurationInput(BaseModel):
     pace: VisitPace
 
 
+class SpotTiming(BaseModel):
+    spot: Spot
+    date: str
+    arrival_time: str  # HH:MM format
+    departure_time: str  # HH:MM format
+    visit_duration_min: int
+    transport_time_min: int = 0  # Time to get to this spot from previous
+
+
 class TimeGaugeStatus(BaseModel):
     total_available_time_min: int
     time_spent_min: int
     remaining_time_min: int
-    selected_spots_for_day: List[Spot]
     can_add_more: bool
+    spot_timings: List[SpotTiming] = []  # New field for detailed timing
 
 
 class ValidationRequest(BaseModel):

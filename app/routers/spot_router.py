@@ -9,11 +9,11 @@ from app.services.firestore_service import (
     get_spot_from_db,
 )
 
-spots_router = APIRouter(prefix="/spots", tags=["Spot Selection"])
+spots_router = APIRouter(prefix="/spots", tags=["Spots"])
 
 
-@spots_router.post("/select", response_model=List[MatchedSpot])
-async def select_spots_endpoint(preferences: UserPreferences):
+@spots_router.post("/find", response_model=List[MatchedSpot])
+async def find_spots(preferences: UserPreferences):
     all_playlists_list = get_all_playlists_from_db()
     valid_activity_types = [playlist.name for playlist in all_playlists_list]
 

@@ -72,6 +72,12 @@ def get_adjusted_visit_duration(standard_duration_min: int, pace: VisitPace) -> 
     return max(30, standard_duration_min + adjustment)
 
 
+def parse_visit_duration_to_minutes(visit_duration: str) -> int:
+    """Convert visitDuration string (e.g., '1:30') to minutes"""
+    h, m = map(int, visit_duration.split(":"))
+    return h * 60 + m
+
+
 def time_str_to_minutes(time_str: str) -> int:
     h, m = map(int, time_str.split(":"))
     return h * 60 + m
