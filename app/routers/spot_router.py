@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 from typing import List
 from app.models import UserPreferences, MatchedSpot
 from app.services.utils import get_embedding, cosine_similarity, get_embeddings_batch
@@ -77,7 +77,7 @@ async def select_spots_endpoint(preferences: UserPreferences):
 
 
 @spots_router.post("/{spot_id}/compute-embedding")
-async def compute_spot_embedding(spot_id: str):
+async def compute_spot_embedding(spot_id: str = Path(..., example="0D75969QWlcaWyUJtNMn")):
     spot = get_spot_from_db(spot_id)
     if not spot:
         raise HTTPException(status_code=404, detail="Spot not found")
