@@ -177,8 +177,8 @@ async def select_spots(
         spot_timings=spot_timings
     )
 
-@itinerary_router.post("/select-spots")
-async def select_spots(
+@itinerary_router.post("/itinerary-validation")
+async def itinerary_validation(
     data: TimeGaugeStatus,
 ):
     remaining_time_min = data.remaining_time_min
