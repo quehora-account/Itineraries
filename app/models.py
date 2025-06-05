@@ -1,5 +1,5 @@
 from typing import List, Dict, Optional, Tuple, Any, Union, Sequence
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 from datetime import datetime
 
@@ -22,19 +22,6 @@ class VisitPace(str, Enum):
     FAST = "rapide"
 
 
-class ActivityType(str, Enum):
-    NATURE = "nature"
-    CULTURE = "culturel"
-    HISTORICAL = "historique"
-    BEACH = "plage"
-    FOOD = "gastronomie"
-    SHOPPING = "shopping"
-    NIGHTLIFE = "vie nocturne"
-    ADVENTURE = "aventure"
-    WELLNESS = "bien-être"
-    ART = "art"
-
-
 class TravelMode(str, Enum):
     WALK = "à pied"
     TRANSPORT = "transport"
@@ -54,7 +41,7 @@ class UserPreferences(BaseModel):
     budget: Optional[str] = None
     companions: TravelCompanion
     has_children: bool
-    inspiring_activity_types: List[ActivityType] = Field(..., max_items=3)
+    activity_types: List[str] = Field(..., max_items=3)
     max_walk_time_per_segment_min: int = Field(default=30)
     hourly_availability: Dict[str, Tuple[str, str]] = Field(
         ..., description="e.g., {'2025-07-15': ('09:00', '18:00')}"

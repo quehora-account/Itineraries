@@ -14,14 +14,20 @@ spots_router = APIRouter(prefix="/spots", tags=["Spot Selection"])
 
 @spots_router.post("/select", response_model=List[MatchedSpot])
 async def select_spots_endpoint(preferences: UserPreferences):
+    all_playlists_list = get_all_playlists_from_db()
+    valid_activity_types = (playlist.name for playlist in all_playlists_list)
+
+    for activity_type in preferences.activity_types:
+        if activity_type not in valid_activity_types:
+            raise HTTPException(status_code=400, detail=f"Activity type {activity_type} is not valid")
+
     print("Computing user embedding")
-    pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.inspiring_activity_types)}, Pace: {preferences.visit_pace.value}"
+    pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.activity_types)}, Pace: {preferences.visit_pace.value}"
     user_emb = get_embedding(pref_text)
 
-    all_playlists_list = get_all_playlists_from_db()
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
 
-    all_spots = await get_all_spots_from_db()
+    all_spots = get_all_spots_from_db()
 
     matched_spots_list = []
     for spot_obj in all_spots:
