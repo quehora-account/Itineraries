@@ -40,7 +40,7 @@ class UserPreferences(BaseModel):
         min_items=1, 
         max_items=3, 
         description="List of dates in YYYY-MM-DD format",
-        example=["2024-07-10", "2024-07-25"]
+        example=["2024-07-10", "2024-07-12"]
     )
     budget: Optional[str] = Field(None, example="250€")
     companions: TravelCompanion = Field(..., example=TravelCompanion.COUPLE)
@@ -54,7 +54,7 @@ class UserPreferences(BaseModel):
     hourly_availability: Dict[str, Tuple[str, str]] = Field(
         ..., 
         description="e.g., {'2025-07-15': ('09:00', '18:00')}",
-        example={"2024-07-15": ("09:00", "18:00")}
+        example={"2024-07-10": ("09:00", "18:00"), "2024-07-11": ("09:00", "18:00"), "2024-07-12": ("09:00", "14:00")}
     )
     visit_pace: VisitPace = Field(..., example=VisitPace.BALANCED)
     lunch_break_required: bool = Field(default=True, example=True)
