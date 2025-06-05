@@ -176,3 +176,15 @@ async def select_spots(
         can_add_more=can_add_more,
         spot_timings=spot_timings
     )
+
+@itinerary_router.post("/select-spots")
+async def select_spots(
+    data: TimeGaugeStatus,
+):
+    remaining_time_min = data.remaining_time_min
+    if remaining_time_min < 0:
+        return "Votre sélection dépasse le temps disponible. Veuillez retirer un ou plusieurs lieux de visite."
+    elif remaining_time_min < 120:
+        return "optimisation"
+    else:
+        return "Il vous reste du temps. Souhaitez-vous ajouter des visites?"
