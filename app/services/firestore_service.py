@@ -33,17 +33,20 @@ def get_spot_from_db(spot_id: str) -> Optional[Spot]:
 def get_all_spots_from_db() -> List[Spot]:
     spots_list = []
 
-    docs_snapshot = store.collection(settings.SPOTS_COLLECTION).get()
-    for doc in docs_snapshot:
-        spot_data = doc.to_dict()
-        spot_data["id"] = doc.id
-        if isinstance(spot_data.get("coordinates"), FirestoreGeoPoint):
-            spot_data["coordinates"] = GeoPoint(
-                latitude=spot_data["coordinates"].latitude,
-                longitude=spot_data["coordinates"].longitude,
-            )
-        spots_list.append(Spot(**spot_data))
-    return spots_list
+    try:
+        docs_snapshot = store.collection(settings.SPOTS_COLLECTION).get()
+        for doc in docs_snapshot:
+            spot_data = doc.to_dict()
+            spot_data["id"] = doc.id
+            if isinstance(spot_data.get("coordinates"), FirestoreGeoPoint):
+                spot_data["coordinates"] = GeoPoint(
+                    latitude=spot_data["coordinates"].latitude,
+                    longitude=spot_data["coordinates"].longitude,
+                )
+            spots_list.append(Spot(**spot_data))
+        return spots_list
+    except:
+        return []
 
 
 def get_all_playlists_from_db() -> List[Playlist]:

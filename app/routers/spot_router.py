@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Path
 from typing import List
-from app.models import UserPreferences, MatchedSpot
+from app.models import SpotUserPreferences, MatchedSpot, SimplifiedMatchedSpot
 from app.services.utils import get_embedding, cosine_similarity, get_embeddings_batch, time_str_to_minutes
 from app.services.firestore_service import (
     get_all_playlists_from_db,
@@ -12,8 +12,8 @@ from app.services.firestore_service import (
 spots_router = APIRouter(prefix="/spots", tags=["Spots"])
 
 
-@spots_router.post("/find", response_model=List[MatchedSpot])
-async def find_spots(preferences: UserPreferences):
+@spots_router.post("/find", response_model=List[SimplifiedMatchedSpot])
+async def find_spots(preferences: SpotUserPreferences):
     all_playlists_list = get_all_playlists_from_db()
     valid_activity_types = [playlist.name for playlist in all_playlists_list]
 
@@ -61,7 +61,9 @@ async def find_spots(preferences: UserPreferences):
         raise HTTPException(status_code=400, detail=f"No spots found for destination {preferences.destination} and dates {preferences.travel_dates}")
 
     print("Computing user embedding")
-    pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.activity_types)}, Pace: {preferences.visit_pace.value}"
+    pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.activity_types)}"
+    if preferences.budget:
+        pref_text += f", Budget: {preferences.budget.value}"
     user_emb = get_embedding(pref_text)
 
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
@@ -75,8 +77,14 @@ async def find_spots(preferences: UserPreferences):
                 all_playlists[playlist_id].name for playlist_id in spot_obj.playlistIds
             ]
             price_info = ""
-            if spot_obj.fullPrice:
-                price_info = f", Price: {spot_obj.fullPrice.price} ({spot_obj.fullPrice.condition})"
+            if spot_obj.freePrice:
+                price_info = ", Price category: Gratuit"
+            elif spot_obj.reducedPrice:
+                price_info = ", Price category: Budget malin"
+            elif spot_obj.fullPrice:
+                price_info = ", Price category: Budget équilibré"
+            else:
+                price_info = ", Price category: Budget libre"
             spot_text_to_encode = f"{spot_obj.name}, {spot_obj.description}, {spot_obj.type}, {', '.join(spot_obj.highlights)}, playlists: {', '.join(playlist_labels)}{price_info}"
             spots_to_update.append(spot_obj)
             spot_texts.append(spot_text_to_encode)
@@ -109,10 +117,19 @@ async def find_spots(preferences: UserPreferences):
         : 15 * len(preferences.travel_dates)
     ]
 
+    simplified_spots = []
     for spot in top_spots:
-        del spot.spot.embedding
+        simplified_spots.append(
+            SimplifiedMatchedSpot(
+                name=spot.spot.name,
+                city=spot.spot.cityId,
+                type=spot.spot.type,
+                score=spot.final_score,
+                images=[spot.spot.imageCardPath] + spot.spot.imageGalleryPaths
+            )
+        )
 
-    return top_spots
+    return simplified_spots
 
 
 @spots_router.post("/{spot_id}/compute-embedding")
@@ -130,8 +147,14 @@ async def compute_spot_embedding(spot_id: str = Path(..., example="0D75969QWlcaW
         if playlist_id in all_playlists
     ]
     price_info = ""
-    if spot.fullPrice:
-        price_info = f", Price: {spot.fullPrice.price} ({spot.fullPrice.condition})"
+    if spot.freePrice:
+        price_info = ", Price category: Gratuit"
+    elif spot.reducedPrice:
+        price_info = ", Price category: Budget malin"
+    elif spot.fullPrice:
+        price_info = ", Price category: Budget équilibré"
+    else:
+        price_info = ", Price category: Budget libre"
     spot_text_to_encode = f"{spot.name}, {spot.description}, {spot.type}, {', '.join(spot.highlights)}, playlists: {', '.join(playlist_labels)}{price_info}"
     embedding = get_embedding(spot_text_to_encode)
     await update_spot_embedding_in_db(spot.id, embedding)

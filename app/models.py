@@ -33,7 +33,14 @@ class OptimizationMode(str, Enum):
     FREEMIUM = "freemium"
 
 
-class UserPreferences(BaseModel):
+class BudgetCategory(str, Enum):
+    FREE = "Gratuit"
+    SMART = "Budget malin"
+    BALANCED = "Budget équilibré"
+    UNLIMITED = "Budget libre"
+
+
+class SpotUserPreferences(BaseModel):
     destination: str = Field(..., example="Paris")
     travel_dates: List[str] = Field(
         ..., 
@@ -42,7 +49,7 @@ class UserPreferences(BaseModel):
         description="List of dates in YYYY-MM-DD format",
         example=["2024-07-10", "2024-07-12"]
     )
-    budget: Optional[str] = Field(None, example="250€")
+    budget: Optional[BudgetCategory] = Field(None, example=BudgetCategory.BALANCED)
     companions: TravelCompanion = Field(..., example=TravelCompanion.COUPLE)
     has_children: bool = Field(..., example=False)
     activity_types: List[str] = Field(
@@ -50,12 +57,15 @@ class UserPreferences(BaseModel):
         max_items=3,
         example=["Culture", "Histoire"]
     )
-    max_walk_time_per_segment_min: int = Field(default=30, example=30)
     hourly_availability: Dict[str, Tuple[str, str]] = Field(
         ..., 
         description="e.g., {'2025-07-15': ('09:00', '18:00')}",
-        example={"2024-07-10": ("09:00", "18:00"), "2024-07-11": ("09:00", "18:00"), "2024-07-12": ("09:00", "14:00")}
+        example={"2024-07-10": ("09:00", "18:00"), "2024-07-11": ("09:00", "18:00"), "2024-07-12": ("14:00", "18:00")}
     )
+
+
+class UserPreferences(SpotUserPreferences):
+    max_walk_time_per_segment_min: int = Field(default=30, example=30)
     visit_pace: VisitPace = Field(..., example=VisitPace.BALANCED)
 
 
@@ -168,6 +178,14 @@ class MatchedSpot(BaseModel):
     final_score: float
     similarity_score: float
     normalized_popularity: float
+
+
+class SimplifiedMatchedSpot(BaseModel):
+    name: str
+    city: str
+    type: str
+    score: float
+    images: List[str]
 
 
 class AdjustedVisitDurationInput(BaseModel):
