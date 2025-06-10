@@ -1,213 +1,93 @@
 from fastapi import APIRouter, HTTPException, Body
-from typing import List
 from app.models import (
-    UserPreferences,
     TimeGaugeStatus,
-    ValidationRequest,
-    ValidationResponse,
-    Spot,
-    SpotTiming,
+    SelectSpotsRequest,
+    SimpleTimeGaugeResponse,
+    SimplifiedSpot,
+    VisitPace,
+    SimpleUserPreferences
 )
-from app.services.utils import (
-    time_str_to_minutes,
-    minutes_to_time_str,
-    get_adjusted_visit_duration,
-    parse_visit_duration_to_minutes,
-    LUNCH_DURATION_MIN,
-    DEFAULT_TRANSPORT_MOYEN_MIN,
-)
-from app.services.distance import get_travel_mode_and_time
 from app.services.firestore_service import get_spot_from_db
-from typing import List
+from app.services.utils import (
+    get_adjusted_visit_duration,
+    parse_visit_duration_to_minutes
+)
 
 itinerary_router = APIRouter(prefix="/itinerary", tags=["Itinerary Planning"])
 
-
-@itinerary_router.post("/select-spots", response_model=TimeGaugeStatus)
+@itinerary_router.post("/select-spots", response_model=SimpleTimeGaugeResponse)
 async def select_spots(
-    preferences: UserPreferences,
-    selected_spot_ids: List[str] = Body(default=["71sKTux0pjVafHBlebaE", "AmeCrkZVdM0BYV6t9wNG", "At80BN8aB5xOsOd8zPzn"], description="List of spot IDs to select"),
+    request: SelectSpotsRequest = Body(default=SelectSpotsRequest(
+        selected_spot_ids=["71sKTux0pjVafHBlebaE", "AmeCrkZVdM0BYV6t9wNG", "At80BN8aB5xOsOd8zPzn", "CFgXlW1MYzYyQagvengL", "Cpsa7mUr9c5Jq1OiBsoQ"],
+        user_preferences=SimpleUserPreferences(time_remaining=1290, visit_pace=VisitPace.BALANCED, n_days=3, transport_moyen=30)
+    )),
 ):
     """
-    Select spots based on available time gauge and progressive filling algorithm.
-    Automatically determines lunch breaks and calculates optimal spot selection.
+    Simplified spot selection based on time gauge filling algorithm.
+    Calculates how many spots can fit in the available time without scheduling them.
     """
     
-    # Calculate total available time with automatic lunch break detection
-    total_allocated_visit_time_min = 0
-    daily_schedules = []  # Track each day's schedule
+    # Extract data from request object
+    selected_spot_ids = request.selected_spot_ids
+    preferences = request.user_preferences
     
-    for date_str, (start_str, end_str) in preferences.hourly_availability.items():
-        daily_minutes = time_str_to_minutes(end_str) - time_str_to_minutes(start_str)
-        start_time_min = time_str_to_minutes(start_str)
-        
-        # Automatically determine lunch break for this day
-        lunch_time_this_day = 0
-        if (start_time_min <= time_str_to_minutes("12:00") and 
-            time_str_to_minutes(end_str) >= time_str_to_minutes("14:00")):
-            lunch_time_this_day = LUNCH_DURATION_MIN
+    # Get spots from database and calculate their scores
+    spots_with_scores = []
+    
+    for spot_id in selected_spot_ids:
+        spot = get_spot_from_db(spot_id)
+        if not spot:
+            raise HTTPException(status_code=404, detail=f"Spot not found: {spot_id}")
             
-        available_time_this_day = daily_minutes - lunch_time_this_day
-        total_allocated_visit_time_min += available_time_this_day
-        
-        daily_schedules.append({
-            'date': date_str,
-            'start_time_min': start_time_min,
-            'end_time_min': time_str_to_minutes(end_str),
-            'available_time_min': available_time_this_day,
-            'current_time_min': start_time_min,
-            'remaining_time_min': available_time_this_day
+        spots_with_scores.append({
+            'spot': spot,
+            'final_score': spot.score
         })
     
-    nb_jours = len(preferences.travel_dates)
-    nb_lieux_initial = len(selected_spot_ids)
+    # Sort spots by score (descending - best first)
+    spots_with_scores.sort(key=lambda x: x['final_score'], reverse=True)
     
-    # Calculate base transport time that will be deducted from available time
-    base_transport_slots = max(0, nb_lieux_initial - nb_jours)
-    base_transport_time = base_transport_slots * DEFAULT_TRANSPORT_MOYEN_MIN
+    # Calculate available time and apply progressive filling algorithm
+    temps_restant = preferences.time_remaining
+    spots_in_jauge = []
     
-    # The maximum time available for visits (gauge maximum)
-    max_gauge_time = total_allocated_visit_time_min - base_transport_time
-    
-    if max_gauge_time <= 0:
-        return TimeGaugeStatus(
-            total_available_time_min=total_allocated_visit_time_min,
-            time_spent_min=0,
-            remaining_time_min=0,
-            selected_spots_for_day=[],
-            can_add_more=False,
-            spot_timings=[]
-        )
-    
-    # Progressive gauge filling algorithm with timing calculation across multiple days
-    selected_spots = []
-    spot_timings = []
-    current_nb_lieux = 0
-    current_day_index = 0
-    spots_per_day = {day['date']: 0 for day in daily_schedules}  # Track number of spots per day
-    
-    # Define lunch break constants
-    LUNCH_START_MIN = time_str_to_minutes("12:00")  # 720 minutes (12:00)
-    LUNCH_END_MIN = time_str_to_minutes("14:00")    # 840 minutes (14:00)
-    
-    # First pass: Ensure at least one spot per day
-    for day_index, day in enumerate(daily_schedules):
-        if day_index >= len(selected_spot_ids):
-            break
-            
-        spot_id = selected_spot_ids[day_index]
-        spot = get_spot_from_db(spot_id)
-        if not spot:
-            return HTTPException(status_code=404, detail=f"Spot with ID {spot_id} not found")
-
-        if spot.embedding:
-            del spot.embedding
-            
+    for index, spot_data in enumerate(spots_with_scores):
+        spot = spot_data['spot']
+        final_score = spot_data['final_score']
+        
+        # Calculate visit duration based on pace
         standard_duration_min = parse_visit_duration_to_minutes(spot.visitDuration)
-        visit_duration = get_adjusted_visit_duration(standard_duration_min, preferences.visit_pace)
+        duree_ajustee = get_adjusted_visit_duration(standard_duration_min, preferences.visit_pace)
         
-        # For first spot of the day, no transport time needed
-        total_spot_time = visit_duration
+        # Calculate spot cost
+        cout_spot = duree_ajustee
         
-        if total_spot_time <= day['remaining_time_min']:
-            current_day = day
-            current_day['current_time_min'] += 0  # No transport time for first spot
-            
-            # Handle lunch break
-            visit_end_time = current_day['current_time_min'] + visit_duration
-            if (current_day['current_time_min'] < LUNCH_END_MIN and visit_end_time > LUNCH_START_MIN):
-                if current_day['current_time_min'] < LUNCH_END_MIN:
-                    current_day['current_time_min'] = LUNCH_END_MIN
-                    
-            arrival_time = minutes_to_time_str(current_day['current_time_min'])
-            departure_time_min = current_day['current_time_min'] + visit_duration
-            departure_time = minutes_to_time_str(departure_time_min)
-            
-            spot_timing = SpotTiming(
-                spot=spot,
-                date=current_day['date'],
-                arrival_time=arrival_time,
-                departure_time=departure_time,
-                visit_duration_min=visit_duration,
-                transport_time_min=0
+        # Add transport time if this is not one of the first n_days spots
+        if index >= preferences.n_days:
+            cout_spot += preferences.transport_moyen
+        
+        # Check if spot fits in remaining time
+        if cout_spot <= temps_restant:
+            # Include the spot
+            simplified_spot = SimplifiedSpot(
+                id=spot.id,
+                name=spot.name,
+                type=spot.type,
+                imageCardPath=spot.imageCardPath,
+                rating=spot.rating,
+                ville=spot.cityId,  # Using cityId as ville
+                final_score=final_score
             )
             
-            selected_spots.append(spot)
-            spot_timings.append(spot_timing)
-            current_day['remaining_time_min'] -= total_spot_time
-            current_nb_lieux += 1
-            current_day['current_time_min'] = departure_time_min
-            spots_per_day[current_day['date']] += 1
-    
-    # Second pass: Schedule remaining spots
-    remaining_spot_ids = selected_spot_ids[len(daily_schedules):]
-    for spot_id in remaining_spot_ids:
-        spot = get_spot_from_db(spot_id)
-        if not spot:
-            return HTTPException(status_code=404, detail=f"Spot with ID {spot_id} not found")
-
-        if spot.embedding:
-            del spot.embedding
-            
-        standard_duration_min = parse_visit_duration_to_minutes(spot.visitDuration)
-        visit_duration = get_adjusted_visit_duration(standard_duration_min, preferences.visit_pace)
-        
-        transport_time = DEFAULT_TRANSPORT_MOYEN_MIN
-        total_spot_time = visit_duration + transport_time
-        
-        # Find a day that can accommodate this spot
-        spot_scheduled = False
-        days_tried = 0
-        
-        while days_tried < len(daily_schedules) and not spot_scheduled:
-            current_day = daily_schedules[current_day_index]
-            
-            if total_spot_time <= current_day['remaining_time_min']:
-                current_day['current_time_min'] += transport_time
-                
-                visit_end_time = current_day['current_time_min'] + visit_duration
-                if (current_day['current_time_min'] < LUNCH_END_MIN and visit_end_time > LUNCH_START_MIN):
-                    if current_day['current_time_min'] < LUNCH_END_MIN:
-                        current_day['current_time_min'] = LUNCH_END_MIN
-                        
-                arrival_time = minutes_to_time_str(current_day['current_time_min'])
-                departure_time_min = current_day['current_time_min'] + visit_duration
-                departure_time = minutes_to_time_str(departure_time_min)
-                
-                spot_timing = SpotTiming(
-                    spot=spot,
-                    date=current_day['date'],
-                    arrival_time=arrival_time,
-                    departure_time=departure_time,
-                    visit_duration_min=visit_duration,
-                    transport_time_min=transport_time
-                )
-                
-                selected_spots.append(spot)
-                spot_timings.append(spot_timing)
-                current_day['remaining_time_min'] -= total_spot_time
-                current_nb_lieux += 1
-                current_day['current_time_min'] = departure_time_min
-                spots_per_day[current_day['date']] += 1
-                spot_scheduled = True
-            else:
-                current_day_index = (current_day_index + 1) % len(daily_schedules)
-                days_tried += 1
-        
-        if not spot_scheduled:
+            spots_in_jauge.append(simplified_spot)
+            temps_restant -= cout_spot
+        else:
+            # Spot doesn't fit, skip it and continue with next ones
             continue
     
-    # Calculate final metrics
-    total_remaining_time = sum(day['remaining_time_min'] for day in daily_schedules)
-    time_spent = max_gauge_time - total_remaining_time
-    can_add_more = total_remaining_time >= 60  # Can add more if at least 1 hour remaining
-    
-    return TimeGaugeStatus(
-        total_available_time_min=total_allocated_visit_time_min,
-        time_spent_min=time_spent,
-        remaining_time_min=total_remaining_time,
-        can_add_more=can_add_more,
-        spot_timings=spot_timings
+    return SimpleTimeGaugeResponse(
+        spots_in_jauge=spots_in_jauge,
+        time_remaining=temps_restant
     )
 
 @itinerary_router.post("/itinerary-validation")

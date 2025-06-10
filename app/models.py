@@ -1,5 +1,5 @@
 from typing import List, Dict, Optional, Tuple, Any, Union, Sequence
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 from enum import Enum
 from datetime import datetime
 
@@ -320,3 +320,31 @@ class OptimizationScores(BaseModel):
 class FinalItineraryOutput(BaseModel):
     days: List[DailyItinerary]
     scores: Optional[OptimizationScores] = None
+
+
+# Simplified models for select-spots endpoint
+class SimpleUserPreferences(BaseModel):
+    time_remaining: int = Field(..., description="Total time remaining in minutes")
+    visit_pace: VisitPace = Field(default=VisitPace.BALANCED, description="Visit pace, defaults to 'équilibré'")
+    n_days: int = Field(..., description="Number of days")
+    transport_moyen: int = Field(default=30, description="Average transport time in minutes, defaults to 30")
+
+
+class SimplifiedSpot(BaseModel):
+    id: str
+    name: str
+    type: str
+    imageCardPath: str
+    rating: float
+    ville: str
+    final_score: float
+
+
+class SimpleTimeGaugeResponse(BaseModel):
+    spots_in_jauge: List[SimplifiedSpot]
+    time_remaining: int
+
+
+class SelectSpotsRequest(BaseModel):
+    selected_spot_ids: List[str] = Field(..., description="List of spot IDs to evaluate")
+    user_preferences: SimpleUserPreferences
