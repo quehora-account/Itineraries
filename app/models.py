@@ -178,6 +178,7 @@ class MatchedSpot(BaseModel):
     final_score: float
     similarity_score: float
     normalized_popularity: float
+    match_percent: int
 
 
 class SimplifiedMatchedSpot(BaseModel):
@@ -185,6 +186,7 @@ class SimplifiedMatchedSpot(BaseModel):
     city: str
     type: str
     score: float
+    match_percent: int
     images: List[str]
 
 

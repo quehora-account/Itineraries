@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Path
 from typing import List
+import math
 from app.models import SpotUserPreferences, MatchedSpot, SimplifiedMatchedSpot
 from app.services.utils import get_embedding, cosine_similarity, get_embeddings_batch, time_str_to_minutes, generate_tarif_description
 from app.services.firestore_service import (
@@ -91,10 +92,16 @@ async def find_spots(preferences: SpotUserPreferences):
             await update_spot_embedding_in_db(spot_obj.id, embedding)
 
     matched_spots_list = []
+    # Find max score for normalization
+    max_score = max((spot_obj.score for spot_obj in spots_with_valid_hours), default=1)
+    
     for spot_obj in spots_with_valid_hours:
         similarity = cosine_similarity(user_emb, spot_obj.embedding)
-        normalized_popularity = min(spot_obj.score / 2_500_000, 1.0)
+        # Use logarithmic normalization
+        normalized_popularity = math.log(1 + spot_obj.score) / math.log(1 + max_score)
         final_score = 0.8 * similarity + 0.2 * normalized_popularity
+        # Convert to percentage
+        match_percent = round(final_score * 100)
 
         matched_spots_list.append(
             MatchedSpot(
@@ -102,11 +109,12 @@ async def find_spots(preferences: SpotUserPreferences):
                 final_score=final_score,
                 similarity_score=similarity,
                 normalized_popularity=normalized_popularity,
+                match_percent=match_percent,
             )
         )
 
     top_spots = sorted(matched_spots_list, key=lambda x: x.final_score, reverse=True)[
-        : 15 * len(preferences.travel_dates)
+        : 10 * len(preferences.travel_dates)
     ]
 
     simplified_spots = []
@@ -117,6 +125,7 @@ async def find_spots(preferences: SpotUserPreferences):
                 city=spot.spot.cityId,
                 type=spot.spot.type,
                 score=spot.final_score,
+                match_percent=spot.match_percent,
                 images=[spot.spot.imageCardPath] + spot.spot.imageGalleryPaths
             )
         )
