@@ -68,21 +68,21 @@ async def select_spots(
         
         # Check if spot fits in remaining time
         if cout_spot <= temps_restant:
-            # Include the spot
+            score_percentage = min(round(final_score * 100), 100)
+            
             simplified_spot = SimplifiedSpot(
                 id=spot.id,
                 name=spot.name,
                 type=spot.type,
-                imageCardPath=spot.imageCardPath,
+                images=[spot.imageCardPath] + spot.imageGalleryPaths,
                 rating=spot.rating,
-                ville=spot.cityId,  # Using cityId as ville
-                final_score=final_score
+                ville=spot.cityId,
+                final_score=score_percentage
             )
             
             spots_in_jauge.append(simplified_spot)
             temps_restant -= cout_spot
         else:
-            # Spot doesn't fit, skip it and continue with next ones
             continue
     
     return SimpleTimeGaugeResponse(

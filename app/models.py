@@ -354,7 +354,7 @@ class SimplifiedSpot(BaseModel):
     id: str
     name: str
     type: str
-    imageCardPath: str
+    images: List[str]
     rating: float
     ville: str
     final_score: float
