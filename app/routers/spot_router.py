@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Path
 from typing import List
 from app.models import SpotUserPreferences, MatchedSpot, SimplifiedMatchedSpot
-from app.services.utils import get_embedding, cosine_similarity, get_embeddings_batch, time_str_to_minutes
+from app.services.utils import get_embedding, cosine_similarity, get_embeddings_batch, time_str_to_minutes, generate_tarif_description
 from app.services.firestore_service import (
     get_all_playlists_from_db,
     get_all_spots_from_db,
@@ -25,7 +25,7 @@ async def find_spots(preferences: SpotUserPreferences):
     all_spots = get_all_spots_from_db()
 
     # Filter spots by city
-    filtered_spots = [spot for spot in all_spots if spot.cityId.lower().find(preferences.destination.lower())]
+    filtered_spots = [spot for spot in all_spots if spot.cityId.lower().find(preferences.destination.lower()) != -1]
     if not filtered_spots:
         raise HTTPException(status_code=400, detail=f"No spots found for destination {preferences.destination}")
 
@@ -76,16 +76,8 @@ async def find_spots(preferences: SpotUserPreferences):
             playlist_labels = [
                 all_playlists[playlist_id].name for playlist_id in spot_obj.playlistIds
             ]
-            price_info = ""
-            if spot_obj.freePrice:
-                price_info = ", Price category: Gratuit"
-            elif spot_obj.reducedPrice:
-                price_info = ", Price category: Budget malin"
-            elif spot_obj.fullPrice:
-                price_info = ", Price category: Budget équilibré"
-            else:
-                price_info = ", Price category: Budget libre"
-            spot_text_to_encode = f"{spot_obj.name}, {spot_obj.description}, {spot_obj.type}, {', '.join(spot_obj.highlights)}, playlists: {', '.join(playlist_labels)}{price_info}"
+            tarif_desc = generate_tarif_description(spot_obj)
+            spot_text_to_encode = f"{spot_obj.name}, {spot_obj.description}, {spot_obj.type}, {', '.join(spot_obj.highlights)}, playlists: {', '.join(playlist_labels)}. {tarif_desc}"
             spots_to_update.append(spot_obj)
             spot_texts.append(spot_text_to_encode)
 
@@ -146,16 +138,8 @@ async def compute_spot_embedding(spot_id: str = Path(..., example="0D75969QWlcaW
         for playlist_id in spot.playlistIds
         if playlist_id in all_playlists
     ]
-    price_info = ""
-    if spot.freePrice:
-        price_info = ", Price category: Gratuit"
-    elif spot.reducedPrice:
-        price_info = ", Price category: Budget malin"
-    elif spot.fullPrice:
-        price_info = ", Price category: Budget équilibré"
-    else:
-        price_info = ", Price category: Budget libre"
-    spot_text_to_encode = f"{spot.name}, {spot.description}, {spot.type}, {', '.join(spot.highlights)}, playlists: {', '.join(playlist_labels)}{price_info}"
+    tarif_desc = generate_tarif_description(spot)
+    spot_text_to_encode = f"{spot.name}, {spot.description}, {spot.type}, {', '.join(spot.highlights)}, playlists: {', '.join(playlist_labels)}. {tarif_desc}"
     embedding = get_embedding(spot_text_to_encode)
     await update_spot_embedding_in_db(spot.id, embedding)
     spot.embedding = embedding

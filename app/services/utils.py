@@ -100,3 +100,47 @@ def get_affluence_score(popular_time: int, density_index: int) -> float:
         popular_time = 50
     coefficient = density_index * 0.2
     return popular_time * coefficient
+
+
+def generate_tarif_description(spot) -> str:
+    """
+    Génère une description enrichie des tarifs et du budget pour un spot.
+    """
+    parts = []
+    # Gratuit
+    if spot.freePrice and spot.freePrice.price and spot.freePrice.price.strip() != "0":
+        parts.append(f"Tarif gratuit : {spot.freePrice.price}€ {spot.freePrice.condition}")
+    elif spot.freePrice and spot.freePrice.condition:
+        parts.append(f"Tarif gratuit pour {spot.freePrice.condition}")
+    elif spot.freePrice:
+        parts.append(f"Tarif gratuit")
+    # Réduit
+    if spot.reducedPrice and spot.reducedPrice.price:
+        try:
+            price_val = float(spot.reducedPrice.price.replace(",", "."))
+            if price_val > 0:
+                parts.append(f"Tarif réduit : {spot.reducedPrice.price}€ {spot.reducedPrice.condition}")
+        except Exception:
+            parts.append(f"Tarif réduit : {spot.reducedPrice.price} {spot.reducedPrice.condition}")
+    # Plein tarif
+    full_price_val = None
+    if spot.fullPrice and spot.fullPrice.price:
+        try:
+            full_price_val = float(spot.fullPrice.price.replace(",", "."))
+            parts.append(f"Plein tarif : {spot.fullPrice.price}€ {spot.fullPrice.condition}")
+        except Exception:
+            parts.append(f"Plein tarif : {spot.fullPrice.price} {spot.fullPrice.condition}")
+    # Catégorie budget
+    budget_cat = None
+    if full_price_val is not None:
+        if full_price_val == 0:
+            budget_cat = "Gratuit"
+        elif 1 <= full_price_val <= 7:
+            budget_cat = "Malin"
+        elif 8 <= full_price_val <= 14:
+            budget_cat = "Équilibré"
+        elif full_price_val > 14:
+            budget_cat = "Libre"
+    if budget_cat:
+        parts.append(f"Budget : {budget_cat}")
+    return ". ".join(parts)
