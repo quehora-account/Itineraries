@@ -71,7 +71,7 @@ def compute_all_distances_endpoint(max_walk_time_per_segment_min: int = 30):
 @data_prep_router.post("/weather-data", response_model=CityWeatherData)
 async def prepare_weather_data_endpoint_new(
     city: str,
-    travel_dates: List[str],
+    travel_dates: List[str] = ['2025-06-13', '2025-06-14', '2025-06-15'],
     daily_hours_range: Tuple[str, str] = ("08:00", "18:00"),
 ):
     if not travel_dates:
