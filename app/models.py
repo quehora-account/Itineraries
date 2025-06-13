@@ -367,7 +367,7 @@ class SimplifiedSpot(BaseModel):
     final_score: float
 
 
-class SimpleTimeGaugeResponse(BaseModel):
+class SimpleTimeGauge(BaseModel):
     spots_in_jauge: List[SimplifiedSpot]
     time_remaining: int
 

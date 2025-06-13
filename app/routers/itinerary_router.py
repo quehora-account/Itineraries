@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Body
 from app.models import (
     TimeGaugeStatus,
     SelectSpotsRequest,
-    SimpleTimeGaugeResponse,
+    SimpleTimeGauge,
     SimplifiedSpot,
     VisitPace,
     SimpleUserPreferences
@@ -15,7 +15,7 @@ from app.services.utils import (
 
 itinerary_router = APIRouter(prefix="/itinerary", tags=["Itinerary Planning"])
 
-@itinerary_router.post("/select-spots", response_model=SimpleTimeGaugeResponse)
+@itinerary_router.post("/select-spots", response_model=SimpleTimeGauge)
 async def select_spots(
     request: SelectSpotsRequest = Body(default=SelectSpotsRequest(
         selected_spot_ids=["71sKTux0pjVafHBlebaE", "AmeCrkZVdM0BYV6t9wNG", "At80BN8aB5xOsOd8zPzn", "CFgXlW1MYzYyQagvengL", "Cpsa7mUr9c5Jq1OiBsoQ"],
@@ -85,16 +85,16 @@ async def select_spots(
         else:
             continue
     
-    return SimpleTimeGaugeResponse(
+    return SimpleTimeGauge(
         spots_in_jauge=spots_in_jauge,
         time_remaining=temps_restant
     )
 
 @itinerary_router.post("/itinerary-validation")
 async def itinerary_validation(
-    data: TimeGaugeStatus,
+    data: SimpleTimeGauge,
 ):
-    remaining_time_min = data.remaining_time_min
+    remaining_time_min = data.time_remaining
     if remaining_time_min < 0:
         return "Votre sélection dépasse le temps disponible. Veuillez retirer un ou plusieurs lieux de visite."
     elif remaining_time_min < 120:
