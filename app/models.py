@@ -112,6 +112,12 @@ class PulsePremium(BaseModel):
     gem: int
 
 
+class LocationType(str, Enum):
+    INDOOR = "indoor"
+    OUTDOOR = "outdoor"
+    MIXED = "mixed"
+
+
 class SpotBase(BaseModel):
     name: str
     fullPrice: Optional[Tarification]
@@ -141,6 +147,7 @@ class SpotBase(BaseModel):
     balancePremium: Optional[BalancePremium]
     pulsePremium: Optional[PulsePremium]
     rating: float
+    locationType: LocationType = Field(..., example=LocationType.INDOOR)
 
     class Config:
         arbitrary_types_allowed = True
