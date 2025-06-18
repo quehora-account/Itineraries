@@ -97,7 +97,7 @@ async def select_spots(
         else:
             continue
 
-    return SimpleTimeGauge(spots_in_jauge=spots_in_jauge, time_remaining=temps_restant)
+    return SimpleTimeGauge(spots=spots_in_jauge, time_remaining=temps_restant)
 
 
 @itinerary_router.post("/itinerary-validation")

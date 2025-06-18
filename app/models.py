@@ -374,7 +374,7 @@ class SimplifiedSpot(BaseModel):
 
 
 class SimpleTimeGauge(BaseModel):
-    spots_in_jauge: List[SimplifiedSpot]
+    spots: List[SimplifiedSpot]
     time_remaining: int
 
 
