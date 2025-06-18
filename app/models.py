@@ -43,24 +43,24 @@ class BudgetCategory(str, Enum):
 class SpotUserPreferences(BaseModel):
     destination: str = Field(..., example="Paris")
     travel_dates: List[str] = Field(
-        ..., 
-        min_items=1, 
-        max_items=3, 
+        ...,
+        min_items=1,
+        max_items=3,
         description="List of dates in YYYY-MM-DD format",
-        example=["2024-07-10", "2024-07-12"]
+        example=["2024-07-10", "2024-07-12"],
     )
     budget: Optional[BudgetCategory] = Field(None, example=BudgetCategory.BALANCED)
     companions: TravelCompanion = Field(..., example=TravelCompanion.COUPLE)
     has_children: bool = Field(..., example=False)
-    activity_types: List[str] = Field(
-        ..., 
-        max_items=3,
-        example=["Culture", "Histoire"]
-    )
+    activity_types: List[str] = Field(..., max_items=3, example=["Culture", "Histoire"])
     hourly_availability: Dict[str, Tuple[str, str]] = Field(
-        ..., 
+        ...,
         description="e.g., {'2025-07-15': ('09:00', '18:00')}",
-        example={"2024-07-10": ("09:00", "18:00"), "2024-07-11": ("09:00", "18:00"), "2024-07-12": ("14:00", "18:00")}
+        example={
+            "2024-07-10": ("09:00", "18:00"),
+            "2024-07-11": ("09:00", "18:00"),
+            "2024-07-12": ("14:00", "18:00"),
+        },
     )
 
 
@@ -189,12 +189,14 @@ class MatchedSpot(BaseModel):
 
 
 class SimplifiedMatchedSpot(BaseModel):
+    id: str
     name: str
-    city: str
     type: str
     score: float
     match_percent: int
     images: List[str]
+    city: str
+    rating: float
 
 
 class AdjustedVisitDurationInput(BaseModel):
@@ -352,9 +354,13 @@ class FinalItineraryOutput(BaseModel):
 # Simplified models for select-spots endpoint
 class SimpleUserPreferences(BaseModel):
     time_remaining: int = Field(..., description="Total time remaining in minutes")
-    visit_pace: VisitPace = Field(default=VisitPace.BALANCED, description="Visit pace, defaults to 'équilibré'")
+    visit_pace: VisitPace = Field(
+        default=VisitPace.BALANCED, description="Visit pace, defaults to 'équilibré'"
+    )
     n_days: int = Field(..., description="Number of days")
-    transport_moyen: int = Field(default=30, description="Average transport time in minutes, defaults to 30")
+    transport_moyen: int = Field(
+        default=30, description="Average transport time in minutes, defaults to 30"
+    )
 
 
 class SimplifiedSpot(BaseModel):
@@ -373,5 +379,7 @@ class SimpleTimeGauge(BaseModel):
 
 
 class SelectSpotsRequest(BaseModel):
-    selected_spot_ids: List[str] = Field(..., description="List of spot IDs to evaluate")
+    selected_spot_ids: List[str] = Field(
+        ..., description="List of spot IDs to evaluate"
+    )
     user_preferences: SimpleUserPreferences
