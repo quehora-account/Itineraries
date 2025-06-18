@@ -179,11 +179,11 @@ async def find_spots(preferences: SpotUserPreferences):
         simplified_spots.append(
             SimplifiedMatchedSpot(
                 name=spot.spot.name,
-                city=spot.spot.cityId,
+                city=spot.spot.cityId.replace("-city", ""),
                 type=spot.spot.type,
                 score=spot.final_score,
                 match_percent=spot.match_percent,
-                images=[spot.spot.imageCardPath] + spot.spot.imageGalleryPaths,
+                images=spot.spot.imageGalleryPaths,
             )
         )
 
