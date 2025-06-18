@@ -1,94 +1,104 @@
 from fastapi import APIRouter, HTTPException, Body
 from app.models import (
-    TimeGaugeStatus,
     SelectSpotsRequest,
     SimpleTimeGauge,
     SimplifiedSpot,
     VisitPace,
-    SimpleUserPreferences
+    SimpleUserPreferences,
 )
 from app.services.firestore_service import get_spot_from_db
 from app.services.utils import (
     get_adjusted_visit_duration,
-    parse_visit_duration_to_minutes
+    parse_visit_duration_to_minutes,
 )
 
 itinerary_router = APIRouter(prefix="/itinerary", tags=["Itinerary Planning"])
 
+
 @itinerary_router.post("/select-spots", response_model=SimpleTimeGauge)
 async def select_spots(
-    request: SelectSpotsRequest = Body(default=SelectSpotsRequest(
-        selected_spot_ids=["71sKTux0pjVafHBlebaE", "AmeCrkZVdM0BYV6t9wNG", "At80BN8aB5xOsOd8zPzn", "CFgXlW1MYzYyQagvengL", "Cpsa7mUr9c5Jq1OiBsoQ"],
-        user_preferences=SimpleUserPreferences(time_remaining=1290, visit_pace=VisitPace.BALANCED, n_days=3, transport_moyen=30)
-    )),
+    request: SelectSpotsRequest = Body(
+        default=SelectSpotsRequest(
+            selected_spot_ids=[
+                "71sKTux0pjVafHBlebaE",
+                "AmeCrkZVdM0BYV6t9wNG",
+                "At80BN8aB5xOsOd8zPzn",
+                "CFgXlW1MYzYyQagvengL",
+                "Cpsa7mUr9c5Jq1OiBsoQ",
+            ],
+            user_preferences=SimpleUserPreferences(
+                time_remaining=1290,
+                visit_pace=VisitPace.BALANCED,
+                n_days=3,
+                transport_moyen=30,
+            ),
+        )
+    ),
 ):
     """
     Simplified spot selection based on time gauge filling algorithm.
     Calculates how many spots can fit in the available time without scheduling them.
     """
-    
+
     # Extract data from request object
     selected_spot_ids = request.selected_spot_ids
     preferences = request.user_preferences
-    
+
     # Get spots from database and calculate their scores
     spots_with_scores = []
-    
+
     for spot_id in selected_spot_ids:
         spot = get_spot_from_db(spot_id)
         if not spot:
             raise HTTPException(status_code=404, detail=f"Spot not found: {spot_id}")
-            
-        spots_with_scores.append({
-            'spot': spot,
-            'final_score': spot.score
-        })
-    
+
+        spots_with_scores.append({"spot": spot, "final_score": spot.score})
+
     # Sort spots by score (descending - best first)
-    spots_with_scores.sort(key=lambda x: x['final_score'], reverse=True)
-    
+    spots_with_scores.sort(key=lambda x: x["final_score"], reverse=True)
+
     # Calculate available time and apply progressive filling algorithm
     temps_restant = preferences.time_remaining
     spots_in_jauge = []
-    
+
     for index, spot_data in enumerate(spots_with_scores):
-        spot = spot_data['spot']
-        final_score = spot_data['final_score']
-        
+        spot = spot_data["spot"]
+        final_score = spot_data["final_score"]
+
         # Calculate visit duration based on pace
         standard_duration_min = parse_visit_duration_to_minutes(spot.visitDuration)
-        duree_ajustee = get_adjusted_visit_duration(standard_duration_min, preferences.visit_pace)
-        
+        duree_ajustee = get_adjusted_visit_duration(
+            standard_duration_min, preferences.visit_pace
+        )
+
         # Calculate spot cost
         cout_spot = duree_ajustee
-        
+
         # Add transport time if this is not one of the first n_days spots
         if index >= preferences.n_days:
             cout_spot += preferences.transport_moyen
-        
+
         # Check if spot fits in remaining time
         if cout_spot <= temps_restant:
             score_percentage = min(round(final_score * 100), 100)
-            
+
             simplified_spot = SimplifiedSpot(
                 id=spot.id,
                 name=spot.name,
                 type=spot.type,
-                images=[spot.imageCardPath] + spot.imageGalleryPaths,
+                images=spot.imageGalleryPaths,
                 rating=spot.rating,
-                ville=spot.cityId,
-                final_score=score_percentage
+                ville=spot.cityId.replace("-city", ""),
+                final_score=score_percentage,
             )
-            
+
             spots_in_jauge.append(simplified_spot)
             temps_restant -= cout_spot
         else:
             continue
-    
-    return SimpleTimeGauge(
-        spots_in_jauge=spots_in_jauge,
-        time_remaining=temps_restant
-    )
+
+    return SimpleTimeGauge(spots_in_jauge=spots_in_jauge, time_remaining=temps_restant)
+
 
 @itinerary_router.post("/itinerary-validation")
 async def itinerary_validation(
