@@ -11,7 +11,7 @@ app = FastAPI(
     version="1.1.0",
 )
 
-app.include_router(data_prep_router, prefix="/api")
+# app.include_router(data_prep_router, prefix="/api")
 app.include_router(spots_router, prefix="/api")
 app.include_router(itinerary_router, prefix="/api")
 app.include_router(optimisation_router, prefix="/api")
