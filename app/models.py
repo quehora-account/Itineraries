@@ -353,7 +353,7 @@ class FinalItineraryOutput(BaseModel):
 
 # Simplified models for select-spots endpoint
 class SimpleUserPreferences(BaseModel):
-    time_remaining: int = Field(..., description="Total time remaining in minutes")
+    user_time_available: int = Field(..., description="Total time available in minutes")
     visit_pace: VisitPace = Field(
         default=VisitPace.BALANCED, description="Visit pace, defaults to 'équilibré'"
     )
@@ -375,7 +375,7 @@ class SimplifiedSpot(BaseModel):
 
 class SimpleTimeGauge(BaseModel):
     spots: List[SimplifiedSpot]
-    time_remaining: int
+    time_remaining_after_visits: int
 
 
 class SelectSpotsRequest(BaseModel):

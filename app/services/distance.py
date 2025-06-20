@@ -31,6 +31,11 @@ def calculate_travel_time_min(distance_km: float, mode: TravelMode) -> int:
 def get_travel_mode_and_time(
     spot_from: Spot, spot_to: Spot, max_walk_time_min: int
 ) -> Tuple[TravelMode, int]:
+    """
+    Get the travel mode and time between two spots.
+    If the walk time is less than the max walk time, return the walk mode.
+    Otherwise, return the transport mode.
+    """
     distance_km = haversine_distance_km(
         spot_from.coordinates.latitude,
         spot_from.coordinates.longitude,

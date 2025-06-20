@@ -27,7 +27,7 @@ async def select_spots(
                 "Cpsa7mUr9c5Jq1OiBsoQ",
             ],
             user_preferences=SimpleUserPreferences(
-                time_remaining=1290,
+                user_time_available=1290,
                 visit_pace=VisitPace.BALANCED,
                 n_days=3,
                 transport_moyen=30,
@@ -58,7 +58,7 @@ async def select_spots(
     spots_with_scores.sort(key=lambda x: x["final_score"], reverse=True)
 
     # Calculate available time and apply progressive filling algorithm
-    temps_restant = preferences.time_remaining
+    temps_restant = preferences.user_time_available
     spots_in_jauge = []
 
     for index, spot_data in enumerate(spots_with_scores):
@@ -97,14 +97,16 @@ async def select_spots(
         else:
             continue
 
-    return SimpleTimeGauge(spots=spots_in_jauge, time_remaining=temps_restant)
+    return SimpleTimeGauge(
+        spots=spots_in_jauge, time_remaining_after_visits=temps_restant
+    )
 
 
 @itinerary_router.post("/itinerary-validation")
 async def itinerary_validation(
     data: SimpleTimeGauge,
 ):
-    remaining_time_min = data.time_remaining
+    remaining_time_min = data.time_remaining_after_visits
     if remaining_time_min < 0:
         return "Votre sélection dépasse le temps disponible. Veuillez retirer un ou plusieurs lieux de visite."
     elif remaining_time_min < 120:
