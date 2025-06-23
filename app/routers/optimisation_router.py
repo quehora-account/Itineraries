@@ -23,7 +23,7 @@ from app.models import (
     TravelMode,
     LocationType,
 )
-from app.services.weather import get_city_weather_data
+from app.services.weather import load_city_weather_from_db
 from app.services.distance import (
     get_distance_matrix,
 )
@@ -735,7 +735,7 @@ async def optimise_itinerary_endpoint(
         if not city:
             raise HTTPException(status_code=400, detail="City must be provided.")
 
-        city_weather_data = get_city_weather_data(city, travel_dates, daily_hours_range)
+        city_weather_data = load_city_weather_from_db(city)
 
     # Get spots data
     spots_data = []

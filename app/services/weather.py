@@ -5,7 +5,7 @@ from app.models import (
     Spot,
 )
 from app.services.utils import normalize_score
-from typing import List, Dict, Tuple, Set, Any
+from typing import List, Dict, Tuple, Set, Any, Optional
 from datetime import datetime, timedelta
 import requests
 import logging
@@ -101,9 +101,55 @@ def get_city_coordinates(city: str) -> Tuple[float, float]:
     return result["latitude"], result["longitude"]
 
 
-def get_city_weather_data(
+def load_city_weather_from_db(city: str) -> Optional[CityWeatherData]:
+    """Load weather data for a city from Firestore database."""
+    try:
+        # Use city name as document ID (same format as when storing)
+        doc_id = city.lower().replace(" ", "-")
+        doc_ref = firestore.client().collection("city_weather").document(doc_id)
+
+        doc = doc_ref.get()
+        if not doc.exists:
+            logger.info(f"No weather data found in database for city: {city}")
+            return None
+
+        doc_data = doc.to_dict()
+
+        # Convert document data back to CityWeatherData model
+        weather_by_date = {}
+
+        for date_str, date_data in doc_data.get("weather_by_date", {}).items():
+            hourly_data = {}
+
+            for hour_key, hour_data in date_data.get("hourly_data", {}).items():
+                hourly_data[hour_key] = WeatherHourlyData(
+                    temp_c=hour_data.get("temp_c", 0.0),
+                    precipitation_mm=hour_data.get("precipitation_mm", 0.0),
+                    wind_kmh=hour_data.get("wind_kmh", 0.0),
+                    summary=hour_data.get("summary", "Unknown"),
+                    emoji=hour_data.get("emoji", "❓"),
+                    temp_comfort_score=hour_data.get("temp_comfort_score", 50),
+                    precip_comfort_score=hour_data.get("precip_comfort_score", 50),
+                    wind_comfort_score=hour_data.get("wind_comfort_score", 50),
+                    raw_weather_score=hour_data.get("raw_weather_score", 50.0),
+                    normalized_weather_score=hour_data.get(
+                        "normalized_weather_score", 50.0
+                    ),
+                )
+
+            weather_by_date[date_str] = WeatherForDate(hourly_data=hourly_data)
+
+        return CityWeatherData(city=city, weather_by_date=weather_by_date)
+
+    except Exception as e:
+        logger.error(f"Error loading weather data from database for city {city}: {e}")
+        return None
+
+
+def get_city_weather_data_from_api(
     city: str, dates: List[str], hours_range: Tuple[str, str]
 ) -> CityWeatherData:
+    """Get weather data from API (original implementation)."""
     weather_by_date_dict = {}
     start_hour = int(hours_range[0].split(":")[0])
     end_hour = int(hours_range[1].split(":")[0])
@@ -227,6 +273,61 @@ def get_city_weather_data(
     return CityWeatherData(city=city, weather_by_date=weather_by_date_dict)
 
 
+def check_weather_data_coverage(
+    weather_data: CityWeatherData, dates: List[str], hours_range: Tuple[str, str]
+) -> bool:
+    """Check if weather data covers all required dates and hours."""
+    start_hour = int(hours_range[0].split(":")[0])
+    end_hour = int(hours_range[1].split(":")[0])
+
+    for date_str in dates:
+        if date_str not in weather_data.weather_by_date:
+            return False
+
+        hourly_data = weather_data.weather_by_date[date_str].hourly_data
+        for hour_int in range(start_hour, end_hour + 1):
+            hour_key = f"{hour_int:02d}"
+            if hour_key not in hourly_data:
+                return False
+
+    return True
+
+
+def get_city_weather_data(
+    city: str, dates: List[str], hours_range: Tuple[str, str]
+) -> CityWeatherData:
+    """
+    Get weather data for a city, preferring database over API.
+
+    First tries to load from database, then falls back to API if:
+    - No data exists in database for the city
+    - Database data doesn't cover all required dates/hours
+    - Database data is older than 6 hours
+    """
+    logger.info(f"Getting weather data for city: {city}")
+
+    # Try to load from database first
+    cached_weather_data = load_city_weather_from_db(city)
+
+    if cached_weather_data:
+        logger.info(f"Found weather data in database for city: {city}")
+
+        # Check if cached data covers all required dates and hours
+        if check_weather_data_coverage(cached_weather_data, dates, hours_range):
+            logger.info(
+                f"Database weather data covers all required dates/hours for city: {city}"
+            )
+            return cached_weather_data
+        else:
+            logger.info(
+                f"Database weather data incomplete for city: {city}, falling back to API"
+            )
+
+    # Fall back to API if no cached data or incomplete coverage
+    logger.info(f"Fetching weather data from API for city: {city}")
+    return get_city_weather_data_from_api(city, dates, hours_range)
+
+
 def extract_cities_from_spots(spots: List[Spot]) -> Set[str]:
     """Extract unique city names from the list of spots."""
     cities = set()
@@ -326,7 +427,7 @@ def update_daily_weather_data() -> None:
         for city in cities:
             try:
                 logger.info(f"Getting weather data for city: {city}")
-                weather_data = get_city_weather_data(city, dates, hours_range)
+                weather_data = get_city_weather_data_from_api(city, dates, hours_range)
 
                 # Update the database
                 update_city_weather_in_db(city, weather_data)
