@@ -1,9 +1,90 @@
 import math
 from app.models import TravelMode, Spot, MatrixTime, MatrixScoreDistance, TravelSegment
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 from app.services.utils import normalize_score
 import osmnx as ox
 import networkx as nx
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+import threading
+
+# Thread-local storage for graphs to avoid conflicts
+_thread_local = threading.local()
+
+
+def get_thread_local_graphs():
+    if not hasattr(_thread_local, "graphs"):
+        _thread_local.graphs = {}
+    return _thread_local.graphs
+
+
+@lru_cache(maxsize=32)
+def get_cached_graph(lat: float, lon: float, dist: int = 5000):
+    """Cache graphs based on location to avoid redundant downloads"""
+    # Round coordinates to reduce cache misses for nearby points
+    rounded_lat = round(lat, 3)
+    rounded_lon = round(lon, 3)
+
+    graphs = get_thread_local_graphs()
+    key = (rounded_lat, rounded_lon, dist)
+
+    if key not in graphs:
+        try:
+            graphs[key] = ox.graph_from_point(
+                (lat, lon),
+                dist=dist,
+                network_type="drive",
+            )
+        except Exception as e:
+            print(f"Error downloading graph for ({lat}, {lon}): {e}")
+            return None
+
+    return graphs[key]
+
+
+def calculate_single_route_distance(spot_a: Spot, spot_b: Spot) -> Tuple[str, float]:
+    """Calculate the real distance between two spots using OSM routing"""
+    key = f"{spot_a.id}-{spot_b.id}"
+
+    # Calculate haversine distance as fallback
+    raw_distance = haversine_distance_km(
+        spot_a.coordinates.latitude,
+        spot_a.coordinates.longitude,
+        spot_b.coordinates.latitude,
+        spot_b.coordinates.longitude,
+    )
+
+    try:
+        # Use the midpoint to get the graph
+        mid_lat = (spot_a.coordinates.latitude + spot_b.coordinates.latitude) / 2
+        mid_lon = (spot_a.coordinates.longitude + spot_b.coordinates.longitude) / 2
+
+        G = get_cached_graph(mid_lat, mid_lon)
+        if G is None:
+            return key, raw_distance
+
+        orig_node = ox.nearest_nodes(
+            G, spot_a.coordinates.longitude, spot_a.coordinates.latitude
+        )
+        dest_node = ox.nearest_nodes(
+            G, spot_b.coordinates.longitude, spot_b.coordinates.latitude
+        )
+
+        route = nx.shortest_path(G, orig_node, dest_node, weight="length")
+        route_length = nx.path_weight(G, route, weight="length") / 1000
+
+        print(
+            f"Raw distance between {spot_a.id} and {spot_b.id}: {raw_distance:.2f} km"
+        )
+        print(
+            f"Real distance between {spot_a.id} and {spot_b.id}: {route_length:.2f} km"
+        )
+
+        return key, route_length
+
+    except (nx.NetworkXNoPath, Exception) as e:
+        print(f"Error calculating route between {spot_a.id} and {spot_b.id}: {e}")
+        return key, raw_distance
 
 
 def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -56,50 +137,60 @@ def get_distance_matrix(
     matrix_time_segments = {}
     raw_distances_km = {}
     real_distances_km = {}
-    for i in range(len(spots)):
-        for j in range(len(spots)):
-            if i == j:
-                continue
-            spot_a, spot_b = spots[i], spots[j]
-            key = f"{spot_a.id}-{spot_b.id}"
-            mode, time_min = get_travel_mode_and_time(
-                spot_a, spot_b, max_walk_time_per_segment_min
-            )
-            matrix_time_segments[key] = TravelSegment(duree=time_min, type=mode)
-            raw_distances_km[key] = haversine_distance_km(
-                spot_a.coordinates.latitude,
-                spot_a.coordinates.longitude,
-                spot_b.coordinates.latitude,
-                spot_b.coordinates.longitude,
-            )
 
-            G = ox.graph_from_point(
-                (spot_a.coordinates.latitude, spot_a.coordinates.longitude),
-                dist=5000,  # 5km radius should be enough for most city distances
-                network_type="drive",
-            )
+    # Group spots by city
+    spots_by_city = {}
+    for spot in spots:
+        if spot.cityId not in spots_by_city:
+            spots_by_city[spot.cityId] = []
+        spots_by_city[spot.cityId].append(spot)
 
-            orig_node = ox.nearest_nodes(
-                G, spot_a.coordinates.longitude, spot_a.coordinates.latitude
-            )
-            dest_node = ox.nearest_nodes(
-                G, spot_b.coordinates.longitude, spot_b.coordinates.latitude
-            )
+    # Prepare all spot pairs for parallel processing
+    spot_pairs = []
+    for city, city_spots in spots_by_city.items():
+        for i in range(len(city_spots)):
+            for j in range(len(city_spots)):
+                if i == j:
+                    continue
+                spot_pairs.append((city_spots[i], city_spots[j]))
 
+    # Calculate basic distances and travel modes first (fast operations)
+    for spot_a, spot_b in spot_pairs:
+        key = f"{spot_a.id}-{spot_b.id}"
+        mode, time_min = get_travel_mode_and_time(
+            spot_a, spot_b, max_walk_time_per_segment_min
+        )
+        matrix_time_segments[key] = TravelSegment(duree=time_min, type=mode)
+        raw_distances_km[key] = haversine_distance_km(
+            spot_a.coordinates.latitude,
+            spot_a.coordinates.longitude,
+            spot_b.coordinates.latitude,
+            spot_b.coordinates.longitude,
+        )
+
+    # Calculate real distances in parallel (expensive operations)
+    print(f"Calculating {len(spot_pairs)} route distances in parallel...")
+    with ThreadPoolExecutor(max_workers=min(8, len(spot_pairs))) as executor:
+        # Submit all route calculations
+        future_to_pair = {
+            executor.submit(calculate_single_route_distance, spot_a, spot_b): (
+                spot_a,
+                spot_b,
+            )
+            for spot_a, spot_b in spot_pairs
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_pair):
             try:
-                route = nx.shortest_path(G, orig_node, dest_node, weight="length")
-                route_length = nx.path_weight(G, route, weight="length") / 1000
-            except nx.NetworkXNoPath:
-                # If no path found, fallback to haversine distance
-                route_length = raw_distances_km[key]
-
-            real_distances_km[key] = route_length
-            print(
-                f"Raw distance between {spot_a.id} and {spot_b.id}: {raw_distances_km[key]} km"
-            )
-            print(
-                f"Real distance between {spot_a.id} and {spot_b.id}: {route_length} km"
-            )
+                key, real_distance = future.result()
+                real_distances_km[key] = real_distance
+            except Exception as e:
+                spot_a, spot_b = future_to_pair[future]
+                print(f"Error processing route for {spot_a.id}-{spot_b.id}: {e}")
+                # Use raw distance as fallback
+                key = f"{spot_a.id}-{spot_b.id}"
+                real_distances_km[key] = raw_distances_km[key]
 
     matrix_score_distance_scores = {}
     if raw_distances_km:

@@ -1,6 +1,13 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
-from app.models import Spot, SpotBase, Playlist, GeoPoint
+from app.models import (
+    Spot,
+    SpotBase,
+    Playlist,
+    GeoPoint,
+    MatrixTime,
+    MatrixScoreDistance,
+)
 from app.core.config import settings
 from typing import List, Optional
 from google.cloud.firestore_v1.vector import Vector
@@ -69,3 +76,23 @@ async def add_spot_to_db(spot_data: SpotBase) -> Spot:
 async def update_spot_embedding_in_db(spot_id: str, embedding: Vector):
     doc_ref = store.collection(settings.SPOTS_COLLECTION).document(spot_id)
     doc_ref.update({"embedding": embedding})
+
+
+def save_distance_matrices_to_db(
+    matrix_time: MatrixTime,
+    matrix_score_distance: MatrixScoreDistance,
+    max_walk_time_per_segment_min: int = 30,
+):
+    """Save the computed distance matrices to the database."""
+    doc_id = f"distance_matrix_{max_walk_time_per_segment_min}min"
+
+    matrix_data = {
+        "matrix_time": matrix_time.model_dump(),
+        "matrix_score_distance": matrix_score_distance.model_dump(),
+        "max_walk_time_per_segment_min": max_walk_time_per_segment_min,
+        "computed_at": firestore.SERVER_TIMESTAMP,
+    }
+
+    doc_ref = store.collection("distance_matrices").document(doc_id)
+    doc_ref.set(matrix_data)
+    print(f"Distance matrices saved to database with ID: {doc_id}")

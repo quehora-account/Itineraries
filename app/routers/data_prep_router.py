@@ -24,7 +24,11 @@ from app.services.utils import (
     LUNCH_DURATION_MIN,
 )
 from app.services.weather import get_city_weather_data
-from app.services.firestore_service import get_spot_from_db, get_all_spots_from_db
+from app.services.firestore_service import (
+    get_spot_from_db,
+    get_all_spots_from_db,
+    save_distance_matrices_to_db,
+)
 from app.services.distance import (
     get_distance_matrix,
     get_travel_mode_and_time,
@@ -53,7 +57,9 @@ def get_distance_endpoint(spot_ids: List[str], max_walk_time_per_segment_min: in
     return get_distance_matrix(spots_to_process, max_walk_time_per_segment_min)
 
 
-@data_prep_router.post("/compute-all-distances", response_model=CityWeatherData)
+@data_prep_router.post(
+    "/compute-all-distances", response_model=Tuple[MatrixTime, MatrixScoreDistance]
+)
 def compute_all_distances_endpoint(max_walk_time_per_segment_min: int = 30):
     print(
         f"Computing all distances with max_walk_time_per_segment_min: {max_walk_time_per_segment_min}"
@@ -65,13 +71,19 @@ def compute_all_distances_endpoint(max_walk_time_per_segment_min: int = 30):
     )
     print(f"Matrix time: {matrix_time}")
     print(f"Matrix score distance: {matrix_score_distance}")
+
+    # Save the computed matrices to the database
+    save_distance_matrices_to_db(
+        matrix_time, matrix_score_distance, max_walk_time_per_segment_min
+    )
+
     return matrix_time, matrix_score_distance
 
 
 @data_prep_router.post("/weather-data", response_model=CityWeatherData)
 async def prepare_weather_data_endpoint_new(
     city: str,
-    travel_dates: List[str] = ['2025-06-13', '2025-06-14', '2025-06-15'],
+    travel_dates: List[str] = ["2025-06-13", "2025-06-14", "2025-06-15"],
     daily_hours_range: Tuple[str, str] = ("08:00", "18:00"),
 ):
     if not travel_dates:
@@ -84,4 +96,3 @@ async def get_affluence_score_endpoint(
     data: CrowdScoreInput,
 ):
     return get_affluence_score(data.popular_time, data.density_index)
-
