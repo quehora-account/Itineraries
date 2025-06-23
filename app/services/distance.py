@@ -168,6 +168,7 @@ def get_distance_matrix(
             spot_b.coordinates.longitude,
         )
 
+    """
     # Calculate real distances in parallel (expensive operations)
     print(f"Calculating {len(spot_pairs)} route distances in parallel...")
     with ThreadPoolExecutor(max_workers=min(8, len(spot_pairs))) as executor:
@@ -191,6 +192,7 @@ def get_distance_matrix(
                 # Use raw distance as fallback
                 key = f"{spot_a.id}-{spot_b.id}"
                 real_distances_km[key] = raw_distances_km[key]
+    """
 
     matrix_score_distance_scores = {}
     if raw_distances_km:
