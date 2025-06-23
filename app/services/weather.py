@@ -1,8 +1,19 @@
-from app.models import CityWeatherData, WeatherForDate, WeatherHourlyData
+from app.models import (
+    CityWeatherData,
+    WeatherForDate,
+    WeatherHourlyData,
+    Spot,
+)
 from app.services.utils import normalize_score
-from typing import List, Dict, Tuple
-from datetime import datetime
+from typing import List, Dict, Tuple, Set, Any
+from datetime import datetime, timedelta
 import requests
+import logging
+from firebase_admin import firestore
+from app.services.firestore_service import get_all_spots_from_db
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_weather_comfort_scores(
@@ -214,3 +225,130 @@ def get_city_weather_data(
                 weather_by_date_dict[date_str].hourly_data[hour_key] = data_entry
 
     return CityWeatherData(city=city, weather_by_date=weather_by_date_dict)
+
+
+def extract_cities_from_spots(spots: List[Spot]) -> Set[str]:
+    """Extract unique city names from the list of spots."""
+    cities = set()
+    for spot in spots:
+        if spot.cityId:
+            # Clean city name by removing '-city' suffix if present
+            city_name = spot.cityId.replace("-city", "").strip()
+            city_name = city_name.replace("-City", "").strip()
+            if city_name:
+                cities.add(city_name)
+    return cities
+
+
+def create_weather_collection_document(
+    city: str, weather_data: CityWeatherData
+) -> Dict[str, Any]:
+    """Convert CityWeatherData to a Firestore-compatible document."""
+    doc_data = {
+        "city": weather_data.city,
+        "last_updated": datetime.now(),
+        "weather_by_date": {},
+    }
+
+    # Convert the weather data to a serializable format
+    for date_str, weather_for_date in weather_data.weather_by_date.items():
+        doc_data["weather_by_date"][date_str] = {"hourly_data": {}}
+
+        for hour_key, hourly_data in weather_for_date.hourly_data.items():
+            doc_data["weather_by_date"][date_str]["hourly_data"][hour_key] = {
+                "temp_c": hourly_data.temp_c,
+                "precipitation_mm": hourly_data.precipitation_mm,
+                "wind_kmh": hourly_data.wind_kmh,
+                "summary": hourly_data.summary,
+                "emoji": hourly_data.emoji,
+                "temp_comfort_score": hourly_data.temp_comfort_score,
+                "precip_comfort_score": hourly_data.precip_comfort_score,
+                "wind_comfort_score": hourly_data.wind_comfort_score,
+                "raw_weather_score": hourly_data.raw_weather_score,
+                "normalized_weather_score": hourly_data.normalized_weather_score,
+            }
+
+    return doc_data
+
+
+def update_city_weather_in_db(city: str, weather_data: CityWeatherData) -> None:
+    """Update weather data for a city in Firestore."""
+    try:
+        # Use city name as document ID for easy retrieval
+        doc_id = city.lower().replace(" ", "-")
+        doc_ref = firestore.client().collection("city_weather").document(doc_id)
+
+        # Convert weather data to Firestore document
+        doc_data = create_weather_collection_document(city, weather_data)
+
+        # Set the document (this will create or update)
+        doc_ref.set(doc_data)
+        logger.info(f"Successfully updated weather data for city: {city}")
+
+    except Exception as e:
+        logger.error(f"Error updating weather data for city {city}: {e}")
+        raise
+
+
+def update_daily_weather_data() -> None:
+    """
+    Function that updates weather data for all cities.
+    Designed to be called from a cron job that runs daily at 6 AM Paris time.
+
+    This function:
+    1. Fetches all spots from the database
+    2. Extracts unique cities from the spots
+    3. Gets weather data for each city for the next 7 days
+    4. Updates the Firestore collection with the weather data
+    """
+    try:
+        logger.info("Starting daily weather data update...")
+
+        # Step 1: Fetch all spots from database
+        logger.info("Fetching all spots from database...")
+        spots = get_all_spots_from_db()
+        logger.info(f"Found {len(spots)} spots in database")
+
+        # Step 2: Extract unique cities
+        logger.info("Extracting cities from spots...")
+        cities = extract_cities_from_spots(spots)
+        logger.info(f"Found {len(cities)} unique cities: {', '.join(sorted(cities))}")
+
+        # Step 3: Generate date range for the next 7 days
+        today = datetime.now()
+        dates = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+        hours_range = ("09", "18")  # 9 AM to 6 PM
+
+        # Step 4: Get weather data for each city and update database
+        successful_updates = 0
+        failed_updates = 0
+
+        for city in cities:
+            try:
+                logger.info(f"Getting weather data for city: {city}")
+                weather_data = get_city_weather_data(city, dates, hours_range)
+
+                # Update the database
+                update_city_weather_in_db(city, weather_data)
+                successful_updates += 1
+
+            except Exception as e:
+                logger.error(f"Failed to update weather for city {city}: {e}")
+                failed_updates += 1
+                continue
+
+        # Log summary
+        total_cities = len(cities)
+        logger.info(
+            f"Weather update completed: {successful_updates}/{total_cities} cities updated successfully"
+        )
+        if failed_updates > 0:
+            logger.warning(f"{failed_updates} cities failed to update")
+
+    except Exception as e:
+        logger.error(f"Critical error in daily weather update: {e}")
+        raise
+
+
+if __name__ == "__main__":
+    update_daily_weather_data()

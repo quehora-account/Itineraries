@@ -1,9 +1,10 @@
 from fastapi import FastAPI
+from fastapi_utilities import repeat_at
 
 from .routers.spot_router import spots_router
 from .routers.itinerary_router import itinerary_router
-from .routers.data_prep_router import data_prep_router
 from .routers.optimisation_router import optimisation_router
+from .services.weather import update_daily_weather_data
 
 app = FastAPI(
     title="Travel Itinerary Planner API (Firestore Refactored)",
@@ -15,3 +16,13 @@ app = FastAPI(
 app.include_router(spots_router, prefix="/api")
 app.include_router(itinerary_router, prefix="/api")
 app.include_router(optimisation_router, prefix="/api")
+
+
+@repeat_at(hour=6, minute=0)
+def update_weather_data():
+    update_daily_weather_data()
+
+
+@app.lifespan("startup")
+def startup_event():
+    update_weather_data()
