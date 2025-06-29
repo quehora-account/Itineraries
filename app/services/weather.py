@@ -293,6 +293,152 @@ def check_weather_data_coverage(
     return True
 
 
+def renormalize_weather_data_for_trip(
+    weather_data: CityWeatherData, dates: List[str], hours_range: Tuple[str, str]
+) -> CityWeatherData:
+    """
+    Re-normalize weather data using min/max across the entire trip dates and hours.
+    This ensures consistent normalization across all cities for the user's trip.
+    """
+    start_hour = int(hours_range[0].split(":")[0])
+    end_hour = int(hours_range[1].split(":")[0])
+
+    # Collect all raw weather scores for the requested dates and hours
+    all_raw_scores = []
+
+    for date_str in dates:
+        if date_str in weather_data.weather_by_date:
+            hourly_data = weather_data.weather_by_date[date_str].hourly_data
+            for hour_int in range(start_hour, end_hour + 1):
+                hour_key = f"{hour_int:02d}"
+                if (
+                    hour_key in hourly_data
+                    and hourly_data[hour_key].raw_weather_score is not None
+                ):
+                    all_raw_scores.append(hourly_data[hour_key].raw_weather_score)
+
+    if not all_raw_scores:
+        return weather_data
+
+    # Calculate min/max for the trip
+    meteo_min = min(all_raw_scores)
+    meteo_max = max(all_raw_scores)
+    normalized_score_const = 50.0 if meteo_min == meteo_max else None
+
+    # Re-normalize all weather scores for the trip dates/hours
+    for date_str in dates:
+        if date_str in weather_data.weather_by_date:
+            hourly_data = weather_data.weather_by_date[date_str].hourly_data
+            for hour_int in range(start_hour, end_hour + 1):
+                hour_key = f"{hour_int:02d}"
+                if (
+                    hour_key in hourly_data
+                    and hourly_data[hour_key].raw_weather_score is not None
+                ):
+                    weather_data.weather_by_date[date_str].hourly_data[
+                        hour_key
+                    ].normalized_weather_score = (
+                        normalized_score_const
+                        if normalized_score_const is not None
+                        else normalize_score(
+                            hourly_data[hour_key].raw_weather_score,
+                            meteo_min,
+                            meteo_max,
+                        )
+                    )
+
+    return weather_data
+
+
+def get_multiple_cities_weather_data(
+    cities: List[str], dates: List[str], hours_range: Tuple[str, str]
+) -> Dict[str, CityWeatherData]:
+    """
+    Get weather data for multiple cities and normalize scores consistently
+    across ALL cities for the entire trip.
+
+    This ensures that weather scores are comparable between different cities
+    during the user's trip by using global min/max across all cities and dates.
+
+    Formula used: score_meteo = (raw_weather_score - meteo_min) / (meteo_max - meteo_min) * 100
+    where meteo_min and meteo_max are extremes observed across ALL hours of ALL cities
+    during the entire trip.
+    """
+    logger.info(f"Getting weather data for cities: {cities}")
+
+    # Step 1: Get raw weather data for all cities
+    cities_weather_data: Dict[str, CityWeatherData] = {}
+    all_raw_scores_global = []
+
+    start_hour = int(hours_range[0].split(":")[0])
+    end_hour = int(hours_range[1].split(":")[0])
+
+    for city in cities:
+        try:
+            weather_data = get_city_weather_data(city, dates, hours_range)
+            cities_weather_data[city] = weather_data
+
+            # Collect all raw scores from this city for global normalization
+            for date_str in dates:
+                if date_str in weather_data.weather_by_date:
+                    hourly_data = weather_data.weather_by_date[date_str].hourly_data
+                    for hour_int in range(start_hour, end_hour + 1):
+                        hour_key = f"{hour_int:02d}"
+                        if (
+                            hour_key in hourly_data
+                            and hourly_data[hour_key].raw_weather_score is not None
+                        ):
+                            all_raw_scores_global.append(
+                                hourly_data[hour_key].raw_weather_score
+                            )
+
+        except Exception as e:
+            logger.error(f"Failed to get weather data for city {city}: {e}")
+            continue
+
+    if not all_raw_scores_global:
+        logger.warning("No weather data collected for global normalization")
+        return cities_weather_data
+
+    # Step 2: Calculate global min/max across ALL cities and dates
+    meteo_min_global = min(all_raw_scores_global)
+    meteo_max_global = max(all_raw_scores_global)
+    normalized_score_const = 50.0 if meteo_min_global == meteo_max_global else None
+
+    logger.info(
+        f"Global weather score range: min={meteo_min_global:.2f}, max={meteo_max_global:.2f}"
+    )
+
+    # Step 3: Re-normalize all cities with global min/max
+    for city, weather_data in cities_weather_data.items():
+        for date_str in dates:
+            if date_str in weather_data.weather_by_date:
+                hourly_data = weather_data.weather_by_date[date_str].hourly_data
+                for hour_int in range(start_hour, end_hour + 1):
+                    hour_key = f"{hour_int:02d}"
+                    if (
+                        hour_key in hourly_data
+                        and hourly_data[hour_key].raw_weather_score is not None
+                    ):
+                        # Apply global normalization: (raw_score - meteo_min) / (meteo_max - meteo_min) * 100
+                        weather_data.weather_by_date[date_str].hourly_data[
+                            hour_key
+                        ].normalized_weather_score = (
+                            normalized_score_const
+                            if normalized_score_const is not None
+                            else normalize_score(
+                                hourly_data[hour_key].raw_weather_score,
+                                meteo_min_global,
+                                meteo_max_global,
+                            )
+                        )
+
+    logger.info(
+        f"Successfully normalized weather data for {len(cities_weather_data)} cities"
+    )
+    return cities_weather_data
+
+
 def get_city_weather_data(
     city: str, dates: List[str], hours_range: Tuple[str, str]
 ) -> CityWeatherData:
@@ -303,6 +449,9 @@ def get_city_weather_data(
     - No data exists in database for the city
     - Database data doesn't cover all required dates/hours
     - Database data is older than 6 hours
+
+    Always re-normalizes the weather scores based on the min/max across
+    the entire trip (all requested dates and hours).
     """
     logger.info(f"Getting weather data for city: {city}")
 
@@ -317,7 +466,10 @@ def get_city_weather_data(
             logger.info(
                 f"Database weather data covers all required dates/hours for city: {city}"
             )
-            return cached_weather_data
+            # Re-normalize weather data for the specific trip dates/hours
+            return renormalize_weather_data_for_trip(
+                cached_weather_data, dates, hours_range
+            )
         else:
             logger.info(
                 f"Database weather data incomplete for city: {city}, falling back to API"

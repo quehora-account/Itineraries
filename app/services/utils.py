@@ -12,6 +12,7 @@ LUNCH_DURATION_MIN = 90
 
 client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
+
 # Get embeddings in batch
 def get_embeddings_batch(texts: List[str]) -> List[Vector]:
     response = client.embeddings.create(
@@ -19,6 +20,7 @@ def get_embeddings_batch(texts: List[str]) -> List[Vector]:
         model="text-embedding-3-small",
     )
     return [response.data[i].embedding for i in range(len(texts))]
+
 
 def get_embedding(text: str) -> Vector:
     response = client.embeddings.create(
@@ -105,11 +107,14 @@ def get_affluence_score(popular_time: int, density_index: int) -> float:
 def generate_tarif_description(spot) -> str:
     """
     Génère une description enrichie des tarifs et du budget pour un spot.
+    Note: Ne pas utiliser pour les embeddings, car le prix fausse la pertinence.
     """
     parts = []
     # Gratuit
     if spot.freePrice and spot.freePrice.price and spot.freePrice.price.strip() != "0":
-        parts.append(f"Tarif gratuit : {spot.freePrice.price}€ {spot.freePrice.condition}")
+        parts.append(
+            f"Tarif gratuit : {spot.freePrice.price}€ {spot.freePrice.condition}"
+        )
     elif spot.freePrice and spot.freePrice.condition:
         parts.append(f"Tarif gratuit pour {spot.freePrice.condition}")
     elif spot.freePrice:
@@ -119,17 +124,25 @@ def generate_tarif_description(spot) -> str:
         try:
             price_val = float(spot.reducedPrice.price.replace(",", "."))
             if price_val > 0:
-                parts.append(f"Tarif réduit : {spot.reducedPrice.price}€ {spot.reducedPrice.condition}")
+                parts.append(
+                    f"Tarif réduit : {spot.reducedPrice.price}€ {spot.reducedPrice.condition}"
+                )
         except Exception:
-            parts.append(f"Tarif réduit : {spot.reducedPrice.price} {spot.reducedPrice.condition}")
+            parts.append(
+                f"Tarif réduit : {spot.reducedPrice.price} {spot.reducedPrice.condition}"
+            )
     # Plein tarif
     full_price_val = None
     if spot.fullPrice and spot.fullPrice.price:
         try:
             full_price_val = float(spot.fullPrice.price.replace(",", "."))
-            parts.append(f"Plein tarif : {spot.fullPrice.price}€ {spot.fullPrice.condition}")
+            parts.append(
+                f"Plein tarif : {spot.fullPrice.price}€ {spot.fullPrice.condition}"
+            )
         except Exception:
-            parts.append(f"Plein tarif : {spot.fullPrice.price} {spot.fullPrice.condition}")
+            parts.append(
+                f"Plein tarif : {spot.fullPrice.price} {spot.fullPrice.condition}"
+            )
     # Catégorie budget
     budget_cat = None
     if full_price_val is not None:

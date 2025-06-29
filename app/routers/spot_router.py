@@ -127,8 +127,7 @@ async def find_spots(preferences: SpotUserPreferences):
             playlist_labels = [
                 all_playlists[playlist_id].name for playlist_id in spot_obj.playlistIds
             ]
-            tarif_desc = generate_tarif_description(spot_obj)
-            spot_text_to_encode = f"{spot_obj.name}, {spot_obj.description}, {spot_obj.type}, {', '.join(spot_obj.highlights)}, playlists: {', '.join(playlist_labels)}. {tarif_desc}"
+            spot_text_to_encode = f"{', '.join(playlist_labels)}, {spot_obj.name}, {spot_obj.type}, {spot_obj.description}, {', '.join(spot_obj.highlights)}"
             spots_to_update.append(spot_obj)
             spot_texts.append(spot_text_to_encode)
 
@@ -145,9 +144,25 @@ async def find_spots(preferences: SpotUserPreferences):
     # Find max score for normalization
     max_score = max((spot_obj.score for spot_obj in spots_with_valid_hours), default=1)
 
-    for spot_obj in spots_with_valid_hours:
-        similarity = cosine_similarity(user_emb, spot_obj.embedding)
-        # Use logarithmic normalization
+    # Calcul des similarités brutes pour normalisation ultérieure
+    similarities = [
+        cosine_similarity(user_emb, spot_obj.embedding)
+        for spot_obj in spots_with_valid_hours
+    ]
+    min_sim = min(similarities)
+    max_sim = max(similarities)
+    base = 45
+    top = 95
+
+    for spot_obj, similarity in zip(spots_with_valid_hours, similarities):
+        # Normalisation du score de similarité sur [45, 95]
+        if max_sim == min_sim:
+            normalized_similarity = (base + top) // 2
+        else:
+            normalized_similarity = round(
+                base + ((similarity - min_sim) / (max_sim - min_sim)) * (top - base)
+            )
+        # Use logarithmic normalization for popularity
         normalized_popularity = math.log(1 + spot_obj.score) / math.log(1 + max_score)
         final_score = 0.8 * similarity + 0.2 * normalized_popularity
         # Convert to percentage
@@ -157,7 +172,7 @@ async def find_spots(preferences: SpotUserPreferences):
             MatchedSpot(
                 spot=spot_obj,
                 final_score=final_score,
-                similarity_score=similarity,
+                similarity_score=normalized_similarity,  # Champ normalisé en %
                 normalized_popularity=normalized_popularity,
                 match_percent=match_percent,
             )
@@ -208,8 +223,7 @@ async def compute_spot_embedding(
         for playlist_id in spot.playlistIds
         if playlist_id in all_playlists
     ]
-    tarif_desc = generate_tarif_description(spot)
-    spot_text_to_encode = f"{spot.name}, {spot.description}, {spot.type}, {', '.join(spot.highlights)}, playlists: {', '.join(playlist_labels)}. {tarif_desc}"
+    spot_text_to_encode = f"{', '.join(playlist_labels)}, {spot.name}, {spot.type}, {spot.description}, {', '.join(spot.highlights)}"
     embedding = get_embedding(spot_text_to_encode)
     await update_spot_embedding_in_db(spot.id, embedding)
     spot.embedding = embedding
