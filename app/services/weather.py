@@ -415,10 +415,10 @@ def update_daily_weather_data() -> None:
         cities = extract_cities_from_spots(spots)
         logger.info(f"Found {len(cities)} unique cities: {', '.join(sorted(cities))}")
 
-        # Step 3: Generate date range for the next 7 days
+        # Step 3: Generate date range for the next 14 days
         today = datetime.now()
-        dates = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-        hours_range = ("09", "18")  # 9 AM to 6 PM
+        dates = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(14)]
+        hours_range = ("07", "23")  # 7 AM to 11 PM
 
         # Step 4: Get weather data for each city and update database
         successful_updates = 0
