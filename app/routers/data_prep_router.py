@@ -55,18 +55,13 @@ def compute_all_distances_endpoint(max_walk_time_per_segment_min: int = 30):
     )
     spots = get_all_spots_from_db()
     print(f"Found {len(spots)} spots")
-    matrix_time, matrix_score_distance = get_distance_matrix(
-        spots, max_walk_time_per_segment_min
-    )
+    matrix_time = get_distance_matrix(spots, max_walk_time_per_segment_min)
     print(f"Matrix time: {matrix_time}")
-    print(f"Matrix score distance: {matrix_score_distance}")
 
     # Save the computed matrices to the database
-    save_distance_matrices_to_db(
-        matrix_time, matrix_score_distance, max_walk_time_per_segment_min
-    )
+    save_distance_matrices_to_db(matrix_time, max_walk_time_per_segment_min)
 
-    return matrix_time, matrix_score_distance
+    return matrix_time
 
 
 @data_prep_router.post("/weather-data", response_model=CityWeatherData)

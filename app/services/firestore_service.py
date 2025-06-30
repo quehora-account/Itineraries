@@ -80,7 +80,6 @@ async def update_spot_embedding_in_db(spot_id: str, embedding: Vector):
 
 def save_distance_matrices_to_db(
     matrix_time: MatrixTime,
-    matrix_score_distance: MatrixScoreDistance,
     max_walk_time_per_segment_min: int = 30,
 ):
     """Save the computed distance matrices to the database."""
@@ -88,7 +87,6 @@ def save_distance_matrices_to_db(
 
     matrix_data = {
         "matrix_time": matrix_time.model_dump(),
-        "matrix_score_distance": matrix_score_distance.model_dump(),
         "max_walk_time_per_segment_min": max_walk_time_per_segment_min,
         "computed_at": firestore.SERVER_TIMESTAMP,
     }
