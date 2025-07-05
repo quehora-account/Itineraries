@@ -87,118 +87,60 @@ def calculate_travel_time_matrix_batch(
 
         for travel in city_travel:
             print(
-                f"Processing city: {travel['source']['id']} with {len(travel['destinations'])} spots"
+                f"Processing city {city}: {travel['source']['id']} with {len(travel['destinations'])} spots"
             )
 
-            # Build locations array from city_travel data
-            locations = []
+            source_spot = travel["source"]
+            destinations_spots = travel["destinations"]
 
-            # Add source location
-            locations.append(
-                {
-                    "id": travel["source"]["id"],
-                    "coords": travel["source"]["coords"],
-                }
-            )
+            locations = [source_spot, *destinations_spots]
 
-            # Add all destination locations
-            for dest in travel["destinations"]:
-                locations.append({"id": dest["id"], "coords": dest["coords"]})
+            data = {
+                "arrival_searches": {
+                    "one_to_many": [
+                        {
+                            "id": f"to_{source_spot['id']}",
+                            "departure_location_id": source_spot["id"],
+                            "arrival_location_ids": [
+                                destination_spot["id"]
+                                for destination_spot in destinations_spots
+                            ],
+                            "transportation": {"type": "public_transport"},
+                            "travel_time": 7200,
+                            "arrival_time_period": "weekday_morning",
+                            "properties": ["travel_time", "distance"],
+                        }
+                    ]
+                },
+                "locations": locations,
+            }
 
-            # For each spot in the city, create a many-to-one request
-            for destination_spot in travel["destinations"]:
-                # Get all other spots as departure locations
-                departure_spot_ids = [
-                    loc["id"]
-                    for loc in locations
-                    if loc["id"] != destination_spot["id"]
-                ]
+            try:
+                time.sleep(1)
+                response = requests.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                data = response.json()
 
-                if not departure_spot_ids:
-                    continue
+                for search_result in data["results"]:
+                    for location in search_result["locations"]:
+                        travel_time = location["properties"]["travel_time"]
+                        distance = location["properties"]["distance"]
 
-                # Create the many-to-one request
-                data = {
-                    "arrival_searches": {
-                        "many_to_one": [
-                            {
-                                "id": f"to_{destination_spot['id']}",
-                                "departure_location_ids": departure_spot_ids,
-                                "arrival_location_id": destination_spot["id"],
-                                "transportation": {"type": "walking+ferry"},
-                                "travel_time": max_walk_time_per_segment_min
-                                * 60,  # Convert to seconds
-                                "arrival_time_period": "weekday_morning",
-                                "properties": ["travel_time", "distance"],
-                            }
-                        ]
-                    },
-                    "locations": locations,
-                }
+                        if distance < 2500:
+                            mode = TravelMode.WALK
+                        else:
+                            mode = TravelMode.TRANSPORT
 
-                try:
-                    time.sleep(1)
-                    response = requests.post(url, headers=headers, json=data)
-                    response.raise_for_status()
-                    result = response.json()
+                        matrix_time_segments[
+                            f"{source_spot['id']}-{location['id']}"
+                        ] = TravelSegment(duree=travel_time, type=mode)
 
-                    # Process the results
-                    if "results" in result:
-                        for search_result in result["results"]:
-                            if (
-                                search_result["search_id"]
-                                == f"to_{destination_spot['id']}"
-                            ):
-                                # Process reachable locations
-                                for location in search_result.get("locations", []):
-                                    departure_spot_id = location["id"]
-                                    travel_time = location["properties"]["travel_time"]
+                        matrix_time_segments[
+                            f"{location['id']}-{source_spot['id']}"
+                        ] = TravelSegment(duree=travel_time, type=mode)
 
-                                    # Determine travel mode based on time
-                                    if travel_time > max_walk_time_per_segment_min * 60:
-                                        mode = TravelMode.TRANSPORT
-                                    else:
-                                        mode = TravelMode.WALK
-
-                                    # Store both directions (A->B and B->A)
-                                    matrix_time_segments[
-                                        f"{departure_spot_id}-{destination_spot['id']}"
-                                    ] = TravelSegment(duree=travel_time, type=mode)
-                                    matrix_time_segments[
-                                        f"{destination_spot['id']}-{departure_spot_id}"
-                                    ] = TravelSegment(duree=travel_time, type=mode)
-
-                                # Process unreachable locations
-                                for unreachable_id in search_result.get(
-                                    "unreachable", []
-                                ):
-                                    # Set high travel time for unreachable locations
-                                    matrix_time_segments[
-                                        f"{unreachable_id}-{destination_spot['id']}"
-                                    ] = TravelSegment(
-                                        duree=999999, type=TravelMode.TRANSPORT
-                                    )
-                                    matrix_time_segments[
-                                        f"{destination_spot['id']}-{unreachable_id}"
-                                    ] = TravelSegment(
-                                        duree=999999, type=TravelMode.TRANSPORT
-                                    )
-
-                    print(f"Processed destination: {destination_spot['id']}")
-
-                except Exception as e:
-                    print(f"Error processing destination {destination_spot['id']}: {e}")
-                    # Fallback: set default values for this destination
-                    for loc in locations:
-                        if loc["id"] != destination_spot["id"]:
-                            matrix_time_segments[
-                                f"{loc['id']}-{destination_spot['id']}"
-                            ] = TravelSegment(
-                                duree=1800, type=TravelMode.WALK  # Default 30 minutes
-                            )
-                            matrix_time_segments[
-                                f"{destination_spot['id']}-{loc['id']}"
-                            ] = TravelSegment(duree=1800, type=TravelMode.WALK)
+            except Exception as e:
+                print(f"Error processing city {city}: {e}")
 
     return matrix_time_segments
 
