@@ -147,7 +147,7 @@ def calculate_travel_time_matrix_batch(
 
 def get_distance_matrix(
     spots: List[Spot], max_walk_time_per_segment_min: int = 30
-) -> Tuple[MatrixTime, MatrixScoreDistance]:
+) -> MatrixTime:
     """
     Compute the travel time and distance score matrices for a list of spots.
     Uses TravelTime API's many-to-one batch requests to minimize API calls.
