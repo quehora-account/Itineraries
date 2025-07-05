@@ -52,7 +52,7 @@ async def optimise_itinerary_endpoint(
         spots_data.append(spot_data)
 
     # Get distance matrix
-    distance_matrix = get_distance_matrix(spots_data, max_walk_time_per_segment_min)
+    distance_matrix, _ = get_distance_matrix(spots_data, max_walk_time_per_segment_min)
 
     # Prepare optimization data
     solver_data = prepare_optimization_data(

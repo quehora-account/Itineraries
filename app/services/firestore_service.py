@@ -94,3 +94,15 @@ def save_distance_matrices_to_db(
     doc_ref = store.collection("distance_matrices").document(doc_id)
     doc_ref.set(matrix_data)
     print(f"Distance matrices saved to database with ID: {doc_id}")
+
+
+def load_distance_matrix_from_db(
+    spots: List[Spot], max_walk_time_per_segment_min: int = 30
+) -> MatrixTime:
+    """Load the distance matrix from the database"""
+    spots_ids = [spot.id for spot in spots]
+    doc_ref = store.collection("distance_matrices").document(
+        f"distance_matrix_{max_walk_time_per_segment_min}min_{len(spots_ids)}spots"
+    )
+    doc = doc_ref.get()
+    return MatrixTime(**doc.to_dict()["matrix_time"])
