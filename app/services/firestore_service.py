@@ -1,4 +1,5 @@
 import firebase_admin
+import json
 from firebase_admin import credentials, firestore
 from app.models import (
     Spot,
@@ -86,7 +87,7 @@ def save_distance_matrices_to_db(
     doc_id = f"distance_matrix_{max_walk_time_per_segment_min}min"
 
     matrix_data = {
-        "matrix_time": matrix_time.model_dump(),
+        "matrix_time": json.dumps(matrix_time.model_dump()),
         "max_walk_time_per_segment_min": max_walk_time_per_segment_min,
         "computed_at": firestore.SERVER_TIMESTAMP,
     }

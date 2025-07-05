@@ -1,4 +1,5 @@
 from enum import Enum
+from pydantic import BaseModel
 
 
 class TravelCompanion(str, Enum):
@@ -28,7 +29,7 @@ class ActivityType(str, Enum):
 
 
 class TravelMode(str, Enum):
-    WALK = "à pied"
+    WALK = "walk"
     TRANSPORT = "transport"
     VIRTUAL = "virtuel"  # For depot-spot connections
 
@@ -36,3 +37,39 @@ class TravelMode(str, Enum):
 class OptimizationMode(str, Enum):
     PREMIUM = "premium"
     FREEMIUM = "freemium"
+
+
+class GeoPoint(BaseModel):
+    latitude: float
+    longitude: float
+
+
+class TravelCompanion(str, Enum):
+    SOLO = "solo"
+    COUPLE = "couple"
+    FRIENDS = "amis"
+    FAMILY = "famille"
+
+
+class VisitPace(str, Enum):
+    RELAXED = "détendu"
+    BALANCED = "équilibré"
+    FAST = "rapide"
+
+
+class OptimizationMode(str, Enum):
+    PREMIUM = "premium"
+    FREEMIUM = "freemium"
+
+
+class BudgetCategory(str, Enum):
+    FREE = "Gratuit"
+    SMART = "Budget malin"
+    BALANCED = "Budget équilibré"
+    UNLIMITED = "Budget libre"
+
+
+class LocationType(str, Enum):
+    INDOOR = "indoor"
+    OUTDOOR = "outdoor"
+    MIXED = "mixed"

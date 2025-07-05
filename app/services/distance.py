@@ -1,15 +1,9 @@
-from app.models import TravelMode, Spot, MatrixTime, TravelSegment, MatrixScoreDistance
-from typing import Tuple, List, Dict, Any
+from app.models import Spot, MatrixTime, TravelSegment
+from app.enums import TravelMode
+from typing import List, Dict, Any
 import requests
 from enum import Enum
 import time
-
-
-class GeoapifyMode(str, Enum):
-    WALK = "walk"
-    DRIVE = "drive"
-    CYCLE = "cycle"
-    PUBLIC_TRANSPORT = "transit"
 
 
 def get_cities_matrix(spots: List[Spot]) -> Dict[str, MatrixTime]:
@@ -142,7 +136,11 @@ def calculate_travel_time_matrix_batch(
             except Exception as e:
                 print(f"Error processing city {city}: {e}")
 
-    return matrix_time_segments
+    matrix_time = MatrixTime(
+        segments=matrix_time_segments,
+    )
+
+    return matrix_time
 
 
 def get_distance_matrix(

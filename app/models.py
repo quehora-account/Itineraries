@@ -1,43 +1,15 @@
 from typing import List, Dict, Optional, Tuple, Any, Union, Sequence
 from pydantic import BaseModel, Field
-from enum import Enum
 from datetime import datetime
-
-
-class GeoPoint(BaseModel):
-    latitude: float
-    longitude: float
-
-
-class TravelCompanion(str, Enum):
-    SOLO = "solo"
-    COUPLE = "couple"
-    FRIENDS = "amis"
-    FAMILY = "famille"
-
-
-class VisitPace(str, Enum):
-    RELAXED = "détendu"
-    BALANCED = "équilibré"
-    FAST = "rapide"
-
-
-class TravelMode(str, Enum):
-    WALK = "à pied"
-    TRANSPORT = "transport"
-    VIRTUAL = "virtuel"
-
-
-class OptimizationMode(str, Enum):
-    PREMIUM = "premium"
-    FREEMIUM = "freemium"
-
-
-class BudgetCategory(str, Enum):
-    FREE = "Gratuit"
-    SMART = "Budget malin"
-    BALANCED = "Budget équilibré"
-    UNLIMITED = "Budget libre"
+from app.enums import (
+    TravelMode,
+    BudgetCategory,
+    TravelCompanion,
+    VisitPace,
+    OptimizationMode,
+    GeoPoint,
+    LocationType,
+)
 
 
 class SpotUserPreferences(BaseModel):
@@ -110,12 +82,6 @@ class PulsePremium(BaseModel):
     from_date: datetime = Field(alias="from")
     to: datetime
     gem: int
-
-
-class LocationType(str, Enum):
-    INDOOR = "indoor"
-    OUTDOOR = "outdoor"
-    MIXED = "mixed"
 
 
 class SpotBase(BaseModel):

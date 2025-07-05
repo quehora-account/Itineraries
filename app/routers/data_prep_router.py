@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Body
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from app.models import (
     MatrixTime,
     MatrixScoreDistance,
@@ -46,9 +46,7 @@ def get_distance_endpoint(
     return get_distance_matrix(spots_to_process, max_walk_time_per_segment_min)
 
 
-@data_prep_router.post(
-    "/compute-all-distances", response_model=Tuple[MatrixTime, MatrixScoreDistance]
-)
+@data_prep_router.post("/compute-all-distances", response_model=MatrixTime)
 def compute_all_distances_endpoint(max_walk_time_per_segment_min: int = 30):
     print(
         f"Computing all distances with max_walk_time_per_segment_min: {max_walk_time_per_segment_min}"
