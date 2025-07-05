@@ -2,6 +2,7 @@ from app.models import TravelMode, Spot, MatrixTime, TravelSegment, MatrixScoreD
 from typing import Tuple, List, Dict, Any
 import requests
 from enum import Enum
+import time
 
 
 class GeoapifyMode(str, Enum):
@@ -136,6 +137,7 @@ def calculate_travel_time_matrix_batch(
                 }
 
                 try:
+                    time.sleep(1)
                     response = requests.post(url, headers=headers, json=data)
                     response.raise_for_status()
                     result = response.json()
@@ -209,7 +211,6 @@ def get_distance_matrix(
     Uses TravelTime API's many-to-one batch requests to minimize API calls.
     """
     cities_matrix = get_cities_matrix(spots)
-    print(cities_matrix)
 
     matrix_time_segments = calculate_travel_time_matrix_batch(
         cities_matrix, max_walk_time_per_segment_min
