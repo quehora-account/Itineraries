@@ -106,13 +106,23 @@ def save_distance_matrices_to_db(
         print(f"Distance matrices saved to database with ID: {doc_id}")
 
 
-def load_distance_matrix_from_db(spots: List[Spot]) -> MatrixTime:
+def load_distance_matrix_from_db(city: str) -> MatrixTime:
     """Load the distance matrix from the database"""
-    # Fixed document ID to match what's being saved
-    doc_ref = store.collection("distance_matrices").document("distance_matrix")
+    doc_ref = store.collection("distance_matrices").document(city)
     doc = doc_ref.get()
 
     if not doc.exists:
         raise ValueError("Distance matrix not found in database")
 
     return MatrixTime(**doc.to_dict()["matrix_time"])
+
+
+def load_optimisation_weights_from_db() -> Dict[str, float]:
+    """Load the optimisation weights from the database"""
+    doc_ref = store.collection("optimisation_weights").document("default")
+    doc = doc_ref.get()
+
+    if not doc.exists:
+        raise ValueError("Optimisation weights not found in database")
+
+    return doc.to_dict()

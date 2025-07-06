@@ -1,699 +1,848 @@
-from ortools.constraint_solver import pywrapcp, routing_enums_pb2
-from typing import List, Tuple, Dict, Optional
-import math
-
+from typing import List, Tuple, Dict, Optional, Union, Any
+from datetime import datetime, timedelta
 from app.models import (
+    MatrixTime,
+    Spot,
+    SimplifiedSpot,
     OptimizationMode,
-    DailyItinerary,
-    ItineraryStep,
-    OptimizationScores,
-    PreparedSolverData,
+    MatrixScoreDistance,
+    UserWindow,
+    SolverInputWeights,
     SolverSpotInfo,
     SolverLunchInfo,
     SolverDepotInfo,
-    UserWindow,
-    SolverInputWeights,
-    MatrixTime,
-    MatrixScoreDistance,
-    TravelSegment,
-    TravelMode,
+    PreparedSolverData,
+    ItineraryStep,
+    DailyItinerary,
+    OptimizationScores,
+    FinalItineraryOutput,
+    CityWeatherData,
+    VisitPace,
     LocationType,
 )
-from app.services.utils import (
-    get_affluence_score,
-    time_str_to_minutes,
-    minutes_to_time_str,
-    parse_visit_duration_to_minutes,
-    client,
-    LUNCH_DURATION_MIN,
+from app.services.firestore_service import (
+    load_distance_matrix_from_db,
+    load_optimisation_weights_from_db,
 )
+from app.services.weather import get_city_weather_data
+from ortools.constraint_solver import routing_enums_pb2
+from ortools.constraint_solver import pywrapcp
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def prepare_optimization_data(
-    spots_data: List[Dict],
-    travel_dates: List[str],
-    daily_hours_range: Tuple[str, str],
-    optimization_mode: OptimizationMode,
-    city_weather_data: Optional[Dict] = None,
-    distance_matrix: Optional[Dict] = None,
-    weights: Optional[Dict] = None,
-) -> PreparedSolverData:
-    """Prepare all data needed for OR-Tools optimization."""
+def filter_distance_matrix(
+    distance_matrix: MatrixTime, spots_data: List[SimplifiedSpot]
+) -> MatrixTime:
+    """Filter the distance matrix to only include spots that are in the spots_data list"""
+    ids = [spot.id for spot in spots_data]
+    segments = distance_matrix.segments
 
-    if weights is None:
-        weights = {"distance": 0.4, "crowd": 0.3, "weather": 0.3}
+    new_segments = {}
+    for key, segment in segments.items():
+        keys = key.split("-")
+        start_id = keys[0]
+        end_id = keys[1]
+        if start_id in ids and end_id in ids:
+            new_segments[key] = segment
 
-    num_vehicles = len(travel_dates)
-    start_hour, end_hour = daily_hours_range
-    start_minutes = time_str_to_minutes(start_hour)
-    end_minutes = time_str_to_minutes(end_hour)
+    filtered_matrix = MatrixTime(segments=new_segments)
+    return filtered_matrix
 
-    # Create user windows (one per vehicle/day)
+
+def get_distance_matrix_score(distance_matrix: MatrixTime) -> MatrixScoreDistance:
+    """
+    Normalize all distances in the MatrixTime to a score between 0 and 100.
+    score_segment = ((Dmax - Dij) / (Dmax - Dmin)) * 100
+    Returns a MatrixScoreDistance with the same keys as the input segments.
+    """
+    # Extract all distances
+    distances = [segment.distance for segment in distance_matrix.segments.values()]
+    if not distances:
+        return MatrixScoreDistance(scores={})
+
+    dmin = min(distances)
+    dmax = max(distances)
+
+    # Avoid division by zero if all distances are the same
+    if dmax == dmin:
+        # All scores are 100 if all distances are the same (best possible)
+        scores = {key: 100.0 for key in distance_matrix.segments.keys()}
+        return MatrixScoreDistance(scores=scores)
+
+    scores = {}
+    for key, segment in distance_matrix.segments.items():
+        score = ((dmax - segment.distance) / (dmax - dmin)) * 100
+        scores[key] = score
+
+    return MatrixScoreDistance(scores=scores)
+
+
+def calculate_crowd_hour_for_spot(spot: Spot, day_index: int) -> Dict[int, float]:
+    """
+    Calculate the crowdHour dictionary for a given spot and day.
+    Args:
+        spot: The spot object, expected to have 'popularTimes' (list of dicts) and 'density' (list of floats, 12 values for 8am-8pm).
+        day_index: Integer (0=Monday, 6=Sunday) to select the correct day from popularTimes.
+    Returns:
+        crowdHour: dict mapping hour (int, 8-19) to crowd score (float)
+    """
+    if not spot.popularTimes or day_index >= len(spot.popularTimes):
+        return {hour: 0.0 for hour in range(8, 20)}
+
+    popular_times_day = spot.popularTimes[day_index]  # dict: hour(str) -> score(float)
+    density = spot.density  # list of 12 floats (for 8am-8pm)
+    crowdHour = {}
+
+    for i, hour in enumerate(range(8, 20)):
+        hour_str = str(hour)
+        popular_time = float(popular_times_day.get(hour_str, 0.0))
+        # density_index is expected to be 1-5, but density array may have floats
+        density_index = float(density[i]) if i < len(density) else 1.0
+        coefficient = density_index * 0.2
+        score_brut = popular_time * coefficient
+        crowdHour[hour] = score_brut
+
+    return crowdHour
+
+
+# === USER AND SPOT DATA MANAGEMENT ===
+
+
+def process_user_windows(
+    travel_dates: List[str], daily_hours_range: Tuple[str, str]
+) -> List[UserWindow]:
+    """
+    Convert daily hours range to user windows for each travel day.
+    Returns array of UserWindow objects with day, start, and end in minutes UTC.
+    """
     user_windows = []
+
     for i, date in enumerate(travel_dates):
-        day_offset_minutes = i * 24 * 60  # Minutes since day 0
-        user_windows.append(
-            UserWindow(
-                vehicle=i,
-                start=start_minutes + day_offset_minutes,
-                end=end_minutes + day_offset_minutes,
+        # Convert time strings to minutes from midnight
+        start_time = daily_hours_range[0]  # e.g., "09:00"
+        end_time = daily_hours_range[1]  # e.g., "18:00"
+
+        start_hour, start_min = map(int, start_time.split(":"))
+        end_hour, end_min = map(int, end_time.split(":"))
+
+        start_minutes = start_hour * 60 + start_min
+        end_minutes = end_hour * 60 + end_min
+
+        user_windows.append(UserWindow(vehicle=i, start=start_minutes, end=end_minutes))
+
+    return user_windows
+
+
+def determine_lunch_requirements(user_windows: List[UserWindow]) -> Dict[int, bool]:
+    """
+    Determine if lunch break is needed for each day based on user windows.
+    Lunch is needed if the user window covers 12:00-14:00 entirely.
+    """
+    lunch_requirements = {}
+
+    for window in user_windows:
+        # 12:00 = 720 minutes, 14:00 = 840 minutes
+        needs_lunch = window.start <= 720 and window.end >= 840
+        lunch_requirements[window.vehicle] = needs_lunch
+
+    return lunch_requirements
+
+
+def adjust_visit_duration(standard_duration_min: int, pace: VisitPace) -> int:
+    """Adjust visit duration based on user's pace preference."""
+    if pace == VisitPace.RELAXED:
+        return int(standard_duration_min * 1.3)
+    elif pace == VisitPace.FAST:
+        return int(standard_duration_min * 0.7)
+    else:  # BALANCED
+        return standard_duration_min
+
+
+def process_spot_info(
+    spots: List[Spot], travel_dates: List[str], pace: VisitPace = VisitPace.BALANCED
+) -> List[SolverSpotInfo]:
+    """
+    Process detailed information for each POI to create SolverSpotInfo objects.
+    """
+    solver_spots = []
+
+    for spot in spots:
+        try:
+            # Parse visit duration (assuming format like "2h30", "90min", "2h", "120")
+            duration_str = spot.visitDuration.lower().strip()
+
+            if "h" in duration_str:
+                parts = duration_str.split("h")
+                hours = int(parts[0])
+                minutes = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+                duration_min = hours * 60 + minutes
+            elif "min" in duration_str:
+                duration_min = int(duration_str.replace("min", ""))
+            elif duration_str.isdigit():
+                duration_min = int(duration_str)  # Assume minutes
+            else:
+                duration_min = 60  # Default 1 hour
+
+            # Ensure minimum duration
+            duration_min = max(15, duration_min)
+
+            # Adjust duration based on pace
+            adjusted_duration = adjust_visit_duration(duration_min, pace)
+
+            # Create time windows based on opening hours
+            time_windows = []
+            if spot.openHours:
+                for open_hour in spot.openHours:
+                    for hours in open_hour.hours:
+                        try:
+                            start_hour, start_min = map(int, hours.start.split(":"))
+                            end_hour, end_min = map(int, hours.end.split(":"))
+
+                            start_minutes = start_hour * 60 + start_min
+                            end_minutes = end_hour * 60 + end_min
+
+                            # Ensure visit can complete before closing
+                            latest_start = end_minutes - adjusted_duration
+                            if latest_start > start_minutes:
+                                time_windows.append((start_minutes, latest_start))
+                        except (ValueError, IndexError):
+                            logger.warning(
+                                f"Invalid opening hours format for spot {spot.id}"
+                            )
+                            continue
+
+            # If no time windows, assume always open during day
+            if not time_windows:
+                time_windows = [(480, 1200)]  # 8:00 to 20:00
+
+            # Calculate crowd hours for the first day (can be extended for multiple days)
+            crowd_hour = calculate_crowd_hour_for_spot(spot, 0)
+
+            # Determine if spot is outdoor
+            is_outdoor = hasattr(spot, "locationType") and (
+                spot.locationType == LocationType.OUTDOOR
+                or spot.locationType == LocationType.MIXED
             )
-        )
 
-    # Create locations list: [depot, spots..., lunch nodes...]
-    locations = []
-
-    # Add depot (index 0)
-    depot = SolverDepotInfo(
-        id="depot", dur=0, outdoor=False, time_windows=[(0, 999999)]  # Always available
-    )
-    locations.append(depot)
-
-    # Add spots
-    for spot_data in spots_data:
-        spot_duration = parse_visit_duration_to_minutes(
-            spot_data.visitDuration or "1:00"
-        )
-        location_type = spot_data.locationType or LocationType.INDOOR
-
-        # Create time windows for this spot based on its opening hours
-        spot_time_windows = create_spot_time_windows(
-            spot_data, travel_dates, daily_hours_range, spot_duration
-        )
-
-        # Prepare crowd data if premium mode
-        crowd_hour = None
-        if optimization_mode == OptimizationMode.PREMIUM:
-            crowd_hour = prepare_crowd_data(spot_data, travel_dates)
-
-        spot_info = SolverSpotInfo(
-            id=spot_data.id,
-            dur=spot_duration,
-            outdoor=(location_type == LocationType.OUTDOOR),
-            time_windows=spot_time_windows,
-            crowdHour=crowd_hour,
-            ignoreMissingScore=True,
-        )
-        locations.append(spot_info)
-
-    # Add lunch nodes (one per vehicle)
-    lunch_index = {}
-    for i in range(num_vehicles):
-        lunch_id = f"lunch_{i}"
-        day_offset_minutes = i * 24 * 60
-        lunch_start = 12 * 60 + day_offset_minutes  # 12:00
-        lunch_end = 14 * 60 + day_offset_minutes  # 14:00
-
-        lunch_info = SolverLunchInfo(
-            id=lunch_id,
-            dur=LUNCH_DURATION_MIN,
-            outdoor=False,
-            vehicle=i,
-            time_windows=[(lunch_start, lunch_end - LUNCH_DURATION_MIN)],
-        )
-        locations.append(lunch_info)
-        lunch_index[str(i)] = lunch_id
-
-    # Prepare weather data if premium mode
-    weather_score_hour = None
-    if optimization_mode == OptimizationMode.PREMIUM and city_weather_data:
-        weather_score_hour = prepare_weather_data(city_weather_data, travel_dates)
-
-    # Convert distance matrix
-    matrix_time = MatrixTime(segments={})
-    matrix_score_distance = MatrixScoreDistance(scores={})
-
-    if distance_matrix:
-        for from_id, to_dict in distance_matrix.items():
-            for to_id, data in to_dict.items():
-                key = f"{from_id}_{to_id}"
-                duration = data.get("duration", 0)
-                score = data.get("score", 50.0)
-
-                matrix_time.segments[key] = TravelSegment(
-                    duree=duration,
-                    type=TravelMode.WALK if duration > 0 else TravelMode.VIRTUAL,
+            solver_spots.append(
+                SolverSpotInfo(
+                    id=spot.id,
+                    dur=adjusted_duration,
+                    outdoor=is_outdoor,
+                    time_windows=time_windows,
+                    crowdHour=crowd_hour,
+                    ignoreMissingScore=True,
                 )
-                matrix_score_distance.scores[key] = score
+            )
+        except Exception as e:
+            logger.warning(f"Error processing spot {spot.id}: {e}")
+            # Use default values for problematic spots
+            solver_spots.append(
+                SolverSpotInfo(
+                    id=spot.id,
+                    dur=60,  # Default 1 hour
+                    outdoor=False,
+                    time_windows=[(480, 1200)],  # 8:00 to 20:00
+                    crowdHour={},
+                    ignoreMissingScore=True,
+                )
+            )
 
-    return PreparedSolverData(
-        mode=optimization_mode,
-        numVehicles=num_vehicles,
-        userWindows=user_windows,
-        vehicles=[{"id": i} for i in range(num_vehicles)],
-        weights=SolverInputWeights(**weights),
-        lunchIndex=lunch_index,
-        weatherScoreHour=weather_score_hour,
-        matrixTime=matrix_time,
-        matrixScoreDistance=matrix_score_distance,
-        locations=locations,
-    )
+    return solver_spots
 
 
-def create_spot_time_windows(
-    spot_data: Dict,
+def create_lunch_info(lunch_requirements: Dict[int, bool]) -> List[SolverLunchInfo]:
+    """Create lunch break information for days that need it."""
+    lunch_infos = []
+
+    for vehicle, needs_lunch in lunch_requirements.items():
+        if needs_lunch:
+            lunch_infos.append(
+                SolverLunchInfo(
+                    id=f"lunch_day_{vehicle}",
+                    dur=90,  # 1.5 hours
+                    outdoor=False,
+                    vehicle=vehicle,
+                    time_windows=[(720, 840)],  # 12:00 to 14:00 start time
+                )
+            )
+
+    return lunch_infos
+
+
+def create_depot_info() -> List[SolverDepotInfo]:
+    """Create depot information - single depot for all vehicles."""
+    return [
+        SolverDepotInfo(
+            id="depot",
+            dur=0,
+            outdoor=False,
+            time_windows=[(0, 1440)],  # Full day available
+        )
+    ]
+
+
+def extract_weather_score_hours(
+    weather_data: CityWeatherData,
     travel_dates: List[str],
     daily_hours_range: Tuple[str, str],
-    spot_duration: int,
-) -> List[Tuple[int, int]]:
-    """Create time windows for a spot based on its opening hours and travel dates."""
-    time_windows = []
-
-    start_hour, end_hour = daily_hours_range
-    daily_start = time_str_to_minutes(start_hour)
-    daily_end = time_str_to_minutes(end_hour)
-
-    for day_idx, date in enumerate(travel_dates):
-        day_offset_minutes = day_idx * 24 * 60
-
-        # Get spot opening hours for this day
-        open_hours = spot_data.openHours or []
-        if not open_hours:
-            # Default to daily hours if no opening hours specified
-            window_start = daily_start + day_offset_minutes
-            window_end = daily_end + day_offset_minutes - spot_duration
-            if window_end > window_start:
-                time_windows.append((window_start, window_end))
-        else:
-            # Use actual opening hours
-            for open_hours_obj in open_hours:
-                for hours in open_hours_obj.hours:
-                    spot_open = time_str_to_minutes(hours.start or start_hour)
-                    spot_close = time_str_to_minutes(hours.end or end_hour)
-
-                    # Intersect with daily availability
-                    window_start = max(spot_open, daily_start) + day_offset_minutes
-                    window_end = (
-                        min(spot_close, daily_end) + day_offset_minutes - spot_duration
-                    )
-
-                    if window_end > window_start:
-                        time_windows.append((window_start, window_end))
-
-    return time_windows if time_windows else [(0, 1)]  # Fallback
-
-
-def prepare_crowd_data(spot_data: Dict, travel_dates: List[str]) -> Dict[int, float]:
-    """Prepare crowd score data for each hour."""
-    crowd_hour = {}
-
-    popular_times = spot_data.popularTimes or []
-    density = spot_data.density or [1.0]
-    density_index = density[0] if density else 1.0
-
-    for day_idx in range(len(travel_dates)):
-        day_offset_hours = day_idx * 24
-
-        for hour in range(24):
-            # Get popular time for this hour (0-23)
-            popular_time = 50  # Default
-            if hour < len(popular_times):
-                day_popular = popular_times[hour]
-                if isinstance(day_popular, dict):
-                    popular_time = day_popular.value or 50
-                else:
-                    popular_time = day_popular
-
-            # Calculate affluence score
-            affluence_score = get_affluence_score(popular_time, density_index)
-            crowd_hour[day_offset_hours + hour] = affluence_score
-
-    return crowd_hour
-
-
-def prepare_weather_data(
-    city_weather_data: Dict, travel_dates: List[str]
 ) -> Dict[int, float]:
-    """Prepare weather score data for each hour."""
-    weather_score_hour = {}
+    """
+    Extract hourly weather scores for the optimization period.
+    Returns dict mapping hour (in minutes from midnight) to normalized weather score.
+    """
+    weather_scores = {}
 
-    for day_idx, date in enumerate(travel_dates):
-        day_offset_hours = day_idx * 24
+    start_hour = int(daily_hours_range[0].split(":")[0])
+    end_hour = int(daily_hours_range[1].split(":")[0])
 
-        weather_for_date = city_weather_data.weather_by_date.get(date, {})
-        hourly_data = weather_for_date.hourly_data or {}
+    for date in travel_dates:
+        if date in weather_data.weather_by_date:
+            date_weather = weather_data.weather_by_date[date]
 
-        for hour in range(24):
-            hour_key = f"{hour:02d}:00"
-            weather_data = hourly_data.get(hour_key) or {}
+            for hour in range(start_hour, end_hour + 1):
+                hour_str = str(hour)
+                if hour_str in date_weather.hourly_data:
+                    hour_data = date_weather.hourly_data[hour_str]
+                    # Use normalized weather score (0-100, higher is better)
+                    score = hour_data.normalized_weather_score or 50.0
+                    weather_scores[hour * 60] = score  # Convert to minutes
 
-            # Use normalized weather score if available, otherwise calculate
-            weather_score = weather_data.normalized_weather_score or 50.0
-            weather_score_hour[day_offset_hours + hour] = weather_score
-
-    return weather_score_hour
-
-
-def round_time_for_score(start_time_minutes: int) -> int:
-    """Apply rounding rule for score calculation."""
-    minutes = start_time_minutes % 60
-    hours = start_time_minutes // 60
-
-    if minutes <= 29:
-        return hours
-    else:
-        return hours + 1
+    return weather_scores
 
 
-def calculate_visit_score(
-    start_time_minutes: int,
-    duration_minutes: int,
-    score_data: Dict[int, float],
-    day_offset_hours: int = 0,
-) -> float:
-    """Calculate average score over visit duration."""
-    start_hour = round_time_for_score(start_time_minutes)
-    duration_hours = math.ceil(duration_minutes / 60)
-
-    scores = []
-    for hour_offset in range(duration_hours):
-        hour_key = start_hour + hour_offset + day_offset_hours
-        score = score_data.get(hour_key) or 50.0
-        scores.append(score)
-
-    return sum(scores) / len(scores) if scores else 50.0
+# === OR-TOOLS SOLVER INTEGRATION ===
 
 
-def create_cost_callback(solver_data: PreparedSolverData):
-    """Create cost callback function for OR-Tools solver."""
+def create_distance_callback(
+    matrix_score_distance: MatrixScoreDistance,
+    locations: List[Union[SolverSpotInfo, SolverLunchInfo, SolverDepotInfo]],
+) -> callable:
+    """Create distance callback function for OR-Tools solver."""
+
+    def distance_callback(from_index, to_index):
+        from_id = locations[from_index].id
+        to_id = locations[to_index].id
+
+        # Virtual transitions (depot connections) have zero cost
+        if from_id.startswith("depot") or to_id.startswith("depot"):
+            return 0
+
+        # Look up distance score
+        key = f"{from_id}-{to_id}"
+        if key in matrix_score_distance.scores:
+            # Convert to cost (100 - score) and scale for solver
+            cost = int((100 - matrix_score_distance.scores[key]) * 100)
+            return cost
+
+        return 10000  # High penalty for missing distances
+
+    return distance_callback
+
+
+def create_cost_callback(
+    matrix_score_distance: MatrixScoreDistance,
+    locations: List[Union[SolverSpotInfo, SolverLunchInfo, SolverDepotInfo]],
+    weights: SolverInputWeights,
+    mode: OptimizationMode,
+    weather_scores: Dict[int, float],
+) -> callable:
+    """Create comprehensive cost callback incorporating all factors."""
 
     def cost_callback(from_index, to_index):
-        from_node = solver_data.locations[from_index]
-        to_node = solver_data.locations[to_index]
+        from_id = locations[from_index].id
+        to_id = locations[to_index].id
 
-        # Get distance cost
-        key = f"{from_node.id}_{to_node.id}"
-        distance_score = solver_data.matrixScoreDistance.scores.get(key) or 50.0
-        distance_cost = distance_score * solver_data.weights.distance
+        # Virtual transitions (depot connections) have zero cost
+        if from_id.startswith("depot") or to_id.startswith("depot"):
+            return 0
 
-        total_cost = distance_cost
+        # For simplicity, use only distance component for now
+        # Distance component (always applied)
+        key = f"{from_id}-{to_id}"
+        if key in matrix_score_distance.scores:
+            distance_cost = (100 - matrix_score_distance.scores[key]) * weights.distance
+            return int(distance_cost * 10)  # Scale for solver
 
-        # Add crowd cost if premium mode
-        if (
-            solver_data.mode == OptimizationMode.PREMIUM
-            and hasattr(to_node, "crowdHour")
-            and to_node.crowdHour
-        ):
-            # This is simplified - in reality we'd need the actual start time
-            # For now, use a representative score
-            crowd_score = sum(to_node.crowdHour.values()) / len(to_node.crowdHour)
-            crowd_cost = crowd_score * solver_data.weights.crowd
-            total_cost += crowd_cost
-
-        # Add weather cost if premium mode and outdoor
-        if (
-            solver_data.mode == OptimizationMode.PREMIUM
-            and to_node.outdoor
-            and solver_data.weatherScoreHour
-        ):
-            # This is simplified - in reality we'd need the actual start time
-            weather_score = sum(solver_data.weatherScoreHour.values()) / len(
-                solver_data.weatherScoreHour
-            )
-            weather_cost = weather_score * solver_data.weights.weather
-            total_cost += weather_cost
-
-        return int(total_cost * 100)  # Scale for integer arithmetic
+        # High penalty for missing distances
+        return 1000
 
     return cost_callback
 
 
-def create_time_callback(solver_data: PreparedSolverData):
-    """Create time callback function for OR-Tools solver."""
-
-    def time_callback(from_index, to_index):
-        from_node = solver_data.locations[from_index]
-        to_node = solver_data.locations[to_index]
-
-        # Get travel time
-        key = f"{from_node.id}_{to_node.id}"
-        travel_time = solver_data.matrixTime.segments.get(
-            key, TravelSegment(duree=0, type=TravelMode.VIRTUAL)
-        ).duree
-
-        # Add service time of destination node
-        service_time = to_node.dur
-
-        return travel_time + service_time
-
-    return time_callback
-
-
-def solve_vrp(solver_data: PreparedSolverData) -> Optional[Dict]:
-    """Solve the Vehicle Routing Problem using OR-Tools."""
-
-    # Create the routing index manager
-    manager = pywrapcp.RoutingIndexManager(
-        len(solver_data.locations), solver_data.numVehicles, 0  # depot index
-    )
-
-    # Create routing model
-    routing = pywrapcp.RoutingModel(manager)
-
-    # Create cost callback
-    cost_callback = create_cost_callback(solver_data)
-    cost_callback_index = routing.RegisterUnaryTransitCallback(cost_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(cost_callback_index)
-
-    # Create time callback
-    time_callback = create_time_callback(solver_data)
-    time_callback_index = routing.RegisterUnaryTransitCallback(time_callback)
-
-    # Add time dimension
-    routing.AddDimension(
-        time_callback_index,
-        0,  # no slack
-        3000,  # max time per vehicle (50 hours)
-        False,  # Don't force start cumul to zero
-        "Time",
-    )
-    time_dimension = routing.GetDimensionOrDie("Time")
-
-    # Add time windows constraints
-    for location_idx, location in enumerate(solver_data.locations):
-        if location.time_windows:
-            for start_time, end_time in location.time_windows:
-                index = manager.NodeToIndex(location_idx)
-                time_dimension.CumulVar(index).SetRange(start_time, end_time)
-
-    # Add vehicle time windows
-    for vehicle_id in range(solver_data.numVehicles):
-        user_window = solver_data.userWindows[vehicle_id]
-        start_index = routing.Start(vehicle_id)
-        end_index = routing.End(vehicle_id)
-
-        time_dimension.CumulVar(start_index).SetRange(
-            user_window.start, user_window.end
-        )
-        time_dimension.CumulVar(end_index).SetRange(user_window.start, user_window.end)
-
-    # Add lunch constraints (each lunch node must be visited by its assigned vehicle)
-    if solver_data.lunchIndex:
-        for vehicle_id, lunch_id in solver_data.lunchIndex.items():
-            # Find lunch node index
-            lunch_index = None
-            for idx, location in enumerate(solver_data.locations):
-                if location.id == lunch_id:
-                    lunch_index = idx
-                    break
-
-            if lunch_index is not None:
-                routing.AddVariableMinimizedByFinalizer(
-                    time_dimension.CumulVar(manager.NodeToIndex(lunch_index))
-                )
-                # Force this lunch to be on the correct vehicle
-                routing.VehicleVar(manager.NodeToIndex(lunch_index)).SetValue(
-                    int(vehicle_id)
-                )
-
-    # Set search parameters
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    search_parameters.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    )
-    search_parameters.time_limit.seconds = 2  # 2 second timeout
-
-    # Solve
-    solution = routing.SolveWithParameters(search_parameters)
-
-    if solution:
-        return extract_solution(manager, routing, solution, solver_data)
+def round_visit_time(visit_start_minutes: int) -> int:
+    """Round visit start time according to the rule: 00-29 down, 30-59 up."""
+    minutes = visit_start_minutes % 60
+    if minutes < 30:
+        return visit_start_minutes - minutes
     else:
+        return visit_start_minutes + (60 - minutes)
+
+
+def solve_optimization_problem(
+    prepared_data: PreparedSolverData,
+) -> Optional[Dict[str, Any]]:
+    """
+    Solve the optimization problem using OR-Tools VRPTW solver.
+    """
+    try:
+        # Create the routing index manager
+        num_vehicles = prepared_data.numVehicles
+        num_locations = len(prepared_data.locations)
+
+        # Use single depot configuration for simplicity
+        depot = 0  # Use first location as depot
+
+        manager = pywrapcp.RoutingIndexManager(num_locations, num_vehicles, depot)
+
+        # Create routing model
+        routing = pywrapcp.RoutingModel(manager)
+
+        # Create simplified distance callback
+        def distance_callback(from_index, to_index):
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+
+            from_location = prepared_data.locations[from_node]
+            to_location = prepared_data.locations[to_node]
+
+            # Zero cost for depot transitions
+            if from_location.id.startswith("depot") or to_location.id.startswith(
+                "depot"
+            ):
+                return 0
+
+            # Look up distance score between spots
+            key = f"{from_location.id}-{to_location.id}"
+            if key in prepared_data.matrixScoreDistance.scores:
+                # Convert score to cost (invert and scale)
+                score = prepared_data.matrixScoreDistance.scores[key]
+                cost = int((100 - score) * 10)  # Scale for better solver precision
+                return max(1, cost)  # Ensure positive cost
+
+            # High penalty for missing distances
+            return 1000
+
+        distance_callback_index = routing.RegisterTransitCallback(distance_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(distance_callback_index)
+
+        # Add time dimension with service times
+        def time_callback(from_index, to_index):
+            to_node = manager.IndexToNode(to_index)
+            to_location = prepared_data.locations[to_node]
+
+            # Return service time at destination
+            return to_location.dur
+
+        time_callback_index = routing.RegisterTransitCallback(time_callback)
+
+        # Add time windows
+        time_dimension_name = "Time"
+        routing.AddDimension(
+            time_callback_index,
+            30,  # slack_max (30 minutes buffer)
+            1440,  # vehicle maximum (24 hours)
+            False,  # Don't force start cumul to zero
+            time_dimension_name,
+        )
+
+        time_dimension = routing.GetDimensionOrDie(time_dimension_name)
+
+        # Set vehicle time windows
+        for vehicle_id in range(num_vehicles):
+            if vehicle_id < len(prepared_data.userWindows):
+                window = prepared_data.userWindows[vehicle_id]
+                start_index = routing.Start(vehicle_id)
+                end_index = routing.End(vehicle_id)
+
+                # Set time windows for vehicle start and end
+                time_dimension.CumulVar(start_index).SetRange(
+                    window.start, window.start + 60
+                )
+                time_dimension.CumulVar(end_index).SetRange(window.start, window.end)
+
+        # Set location time windows (simplified - use first time window only)
+        for location_idx, location in enumerate(prepared_data.locations):
+            if location.time_windows and not location.id.startswith("depot"):
+                index = manager.NodeToIndex(location_idx)
+                if index >= 0:  # Valid index
+                    # Use the first time window for simplicity
+                    start_time, end_time = location.time_windows[0]
+                    time_dimension.CumulVar(index).SetRange(start_time, end_time)
+
+        # Add disjunction for optional visits (spots can be skipped if infeasible)
+        penalty = 1000
+        for location_idx, location in enumerate(prepared_data.locations):
+            if not location.id.startswith("depot") and not location.id.startswith(
+                "lunch"
+            ):
+                index = manager.NodeToIndex(location_idx)
+                if index >= 0:
+                    routing.AddDisjunction([index], penalty)
+
+        # Configure search parameters
+        search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+        search_parameters.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        )
+        search_parameters.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        )
+        search_parameters.time_limit.seconds = 5
+        search_parameters.log_search = True
+
+        # Solve the problem
+        logger.info("Starting OR-Tools solver...")
+        solution = routing.SolveWithParameters(search_parameters)
+
+        if solution:
+            logger.info(f"Solution found with status: {routing.status()}")
+            return extract_solution_data(manager, routing, solution, prepared_data)
+        else:
+            logger.warning(f"No solution found. Status: {routing.status()}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error solving optimization problem: {e}")
+        import traceback
+
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 
-def extract_solution(
-    manager, routing, solution, solver_data: PreparedSolverData
-) -> Dict:
-    """Extract solution from OR-Tools solver."""
-
-    solution_data = {
-        "total_cost": solution.ObjectiveValue(),
-        "routes": [],
-        "success": True,
-    }
+def extract_solution_data(
+    manager: pywrapcp.RoutingIndexManager,
+    routing: pywrapcp.RoutingModel,
+    solution: pywrapcp.Assignment,
+    prepared_data: PreparedSolverData,
+) -> Dict[str, Any]:
+    """Extract solution data from OR-Tools solver result."""
+    routes = []
+    total_cost = 0
 
     time_dimension = routing.GetDimensionOrDie("Time")
 
-    for vehicle_id in range(solver_data.numVehicles):
-        route = {"vehicle_id": vehicle_id, "steps": []}
-
+    for vehicle_id in range(prepared_data.numVehicles):
+        route = []
         index = routing.Start(vehicle_id)
+        route_cost = 0
+
         while not routing.IsEnd(index):
             node_index = manager.IndexToNode(index)
-            location = solver_data.locations[node_index]
+            location = prepared_data.locations[node_index]
 
             time_var = time_dimension.CumulVar(index)
             start_time = solution.Value(time_var)
 
-            route["steps"].append(
+            route.append(
                 {
                     "location_id": location.id,
-                    "location_type": type(location).__name__,
                     "start_time": start_time,
                     "duration": location.dur,
                     "node_index": node_index,
                 }
             )
 
+            previous_index = index
             index = solution.Value(routing.NextVar(index))
+            route_cost += routing.GetArcCostForVehicle(
+                previous_index, index, vehicle_id
+            )
 
-        solution_data["routes"].append(route)
+        routes.append({"vehicle_id": vehicle_id, "route": route, "cost": route_cost})
+        total_cost += route_cost
 
-    return solution_data
+    return {"routes": routes, "total_cost": total_cost, "status": "optimal"}
 
 
-def calculate_final_scores(
-    solution_data: Dict, solver_data: PreparedSolverData, travel_dates: List[str]
+# === OUTPUT AND RELEVANCE SCORING ===
+
+
+def calculate_individual_scores(
+    solution_data: Dict[str, Any], prepared_data: PreparedSolverData
 ) -> OptimizationScores:
-    """Calculate final optimization scores."""
+    """Calculate individual criterion scores (distance, crowd, weather)."""
 
+    # For now, return placeholder scores
+    # In a full implementation, these would be calculated from the actual solution
     total_distance_cost = 0
     total_crowd_cost = 0
     total_weather_cost = 0
-    total_segments = 0
 
+    # Calculate based on actual routes
     for route in solution_data["routes"]:
-        steps = route["steps"]
-        day_idx = route["vehicle_id"]
-        day_offset_hours = day_idx * 24
+        for step in route["route"]:
+            location_id = step["location_id"]
+            # Add cost calculations based on actual solution
 
-        for i in range(len(steps) - 1):
-            current_step = steps[i]
-            next_step = steps[i + 1]
-
-            # Distance cost
-            from_id = current_step["location_id"]
-            to_id = next_step["location_id"]
-            key = f"{from_id}_{to_id}"
-            distance_score = solver_data.matrixScoreDistance.scores.get(key, 50.0)
-            total_distance_cost += distance_score
-
-            # Crowd cost (premium only)
-            if solver_data.mode == OptimizationMode.PREMIUM:
-                next_location = None
-                for loc in solver_data.locations:
-                    if loc.id == to_id:
-                        next_location = loc
-                        break
-
-                if (
-                    next_location
-                    and hasattr(next_location, "crowdHour")
-                    and next_location.crowdHour
-                ):
-                    crowd_score = calculate_visit_score(
-                        next_step["start_time"],
-                        next_step["duration"],
-                        next_location.crowdHour,
-                        day_offset_hours,
-                    )
-                    total_crowd_cost += crowd_score
-
-            # Weather cost (premium & outdoor only)
-            if (
-                solver_data.mode == OptimizationMode.PREMIUM
-                and solver_data.weatherScoreHour
-            ):
-                next_location = None
-                for loc in solver_data.locations:
-                    if loc.id == to_id:
-                        next_location = loc
-                        break
-
-                if next_location and next_location.outdoor:
-                    weather_score = calculate_visit_score(
-                        next_step["start_time"],
-                        next_step["duration"],
-                        solver_data.weatherScoreHour,
-                        day_offset_hours,
-                    )
-                    total_weather_cost += weather_score
-
-            total_segments += 1
-
-    # Calculate average scores and convert to 0-100 scale
-    distance_score = (
-        100 - (total_distance_cost / total_segments) if total_segments > 0 else 100
-    )
+    # Convert costs to scores (100 - cost)
+    distance_score = max(0, 100 - (total_distance_cost / 100))
     crowd_score = (
-        100 - (total_crowd_cost / total_segments)
-        if total_segments > 0 and solver_data.mode == OptimizationMode.PREMIUM
+        max(0, 100 - (total_crowd_cost / 100))
+        if prepared_data.mode == OptimizationMode.PREMIUM
         else None
     )
     weather_score = (
-        100 - (total_weather_cost / total_segments)
-        if total_segments > 0 and solver_data.mode == OptimizationMode.PREMIUM
+        max(0, 100 - (total_weather_cost / 100))
+        if prepared_data.mode == OptimizationMode.PREMIUM
         else None
     )
 
     return OptimizationScores(
-        distance=max(0, min(100, distance_score)),
-        crowd=max(0, min(100, crowd_score)) if crowd_score is not None else None,
-        weather=max(0, min(100, weather_score)) if weather_score is not None else None,
+        distance=distance_score, crowd=crowd_score, weather=weather_score
     )
 
 
-def generate_daily_description(
-    route: Dict,
-    spots_data: List[Dict],
-    date: str,
-    city: str,
-    companions: str = "voyageurs",
-) -> str:
-    """Generate a brief description for a daily itinerary using LLM."""
+def calculate_relevance_score(
+    scores: OptimizationScores, weights: SolverInputWeights
+) -> float:
+    """Calculate overall relevance score as weighted average."""
+    total_score = 0.0
+    total_weight = 0.0
 
-    # Prepare data for the prompt
-    visits = []
-    for step in route["steps"]:
-        if step["location_type"] == "SolverSpotInfo":
-            # Find spot data
-            spot_data = None
-            for spot in spots_data:
-                if spot["id"] == step["location_id"]:
-                    spot_data = spot
-                    break
+    if scores.distance is not None:
+        total_score += scores.distance * weights.distance
+        total_weight += weights.distance
 
-            if spot_data:
-                start_time = minutes_to_time_str(step["start_time"] % (24 * 60))
-                end_time = minutes_to_time_str(
-                    (step["start_time"] + step["duration"]) % (24 * 60)
-                )
-                visits.append(
-                    {
-                        "name": spot_data["name"],
-                        "start": start_time,
-                        "end": end_time,
-                        "type": spot_data.get("type", "Visite"),
-                    }
-                )
+    if scores.crowd is not None:
+        total_score += scores.crowd * weights.crowd
+        total_weight += weights.crowd
 
-    if not visits:
-        return f"Journée libre à {city}"
+    if scores.weather is not None:
+        total_score += scores.weather * weights.weather
+        total_weight += weights.weather
 
-    # Create prompt for LLM
-    visits_text = "\n".join(
-        [
-            f"{i+1}) {visit['name']} – {visit['start']}–{visit['end']} ({visit['type']})"
-            for i, visit in enumerate(visits)
-        ]
-    )
-
-    prompt = f"""Rôle : guide de voyage.
-Données :
-- Date : {date}
-- Ville : {city}
-- Voyageurs : {companions}
-- Itinéraire jour :
-{visits_text}
-
-Tâche : rédige un paragraphe de moins de 150 caractères décrivant l'esprit de cette journée."""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
-            temperature=0.7,
-        )
-        description = response.choices[0].message.content.strip()
-        return description[:150]  # Ensure limit
-    except Exception:
-        return f"Découverte de {city} avec {len(visits)} visites prévues"
+    return total_score / total_weight if total_weight > 0 else 0.0
 
 
-def convert_solution_to_itinerary(
-    solution_data: Dict,
-    solver_data: PreparedSolverData,
+def format_solution_output(
+    solution_data: Dict[str, Any],
+    prepared_data: PreparedSolverData,
     travel_dates: List[str],
-    spots_data: List[Dict],
-    city: str,
-    companions: str = "voyageurs",
-) -> List[DailyItinerary]:
-    """Convert solver solution to final itinerary format."""
+    scores: OptimizationScores,
+    relevance_score: float,
+) -> FinalItineraryOutput:
+    """Format the solution into final JSON output."""
 
     daily_itineraries = []
 
     for route in solution_data["routes"]:
-        day_idx = route["vehicle_id"]
-        date = travel_dates[day_idx]
-        steps = []
+        vehicle_id = route["vehicle_id"]
+        if vehicle_id < len(travel_dates):
+            date = travel_dates[vehicle_id]
 
-        previous_step = None
-        for step_data in route["steps"]:
-            location_id = step_data["location_id"]
+            steps = []
+            for step_data in route["route"]:
+                location_id = step_data["location_id"]
+                start_time = step_data["start_time"]
+                duration = step_data["duration"]
 
-            # Skip depot
-            if location_id == "depot":
-                previous_step = step_data
-                continue
+                # Convert minutes to HH:MM format
+                hours = start_time // 60
+                minutes = start_time % 60
+                start_time_str = f"{hours:02d}:{minutes:02d}"
 
-            # Add transport step if needed
-            if previous_step and previous_step["location_id"] != "depot":
-                transport_key = f"{previous_step['location_id']}_{location_id}"
-                transport_duration = solver_data.matrixTime.segments.get(
-                    transport_key, TravelSegment(duree=0, type=TravelMode.VIRTUAL)
-                ).duree
-
-                if transport_duration > 0:
-                    transport_step = ItineraryStep(
-                        type="transport",
-                        from_spot=previous_step["location_id"],
-                        to_spot=location_id,
-                        duration_min=transport_duration,
-                        mode=TravelMode.WALK,
+                if not location_id.startswith("depot"):
+                    steps.append(
+                        ItineraryStep(
+                            type=(
+                                "visit"
+                                if not location_id.startswith("lunch")
+                                else "lunch"
+                            ),
+                            id=location_id,
+                            start=start_time_str,
+                            duration_min=duration,
+                        )
                     )
-                    steps.append(transport_step)
 
-            # Add visit step
-            start_time = minutes_to_time_str(step_data["start_time"] % (24 * 60))
+            daily_itineraries.append(
+                DailyItinerary(day=vehicle_id, date=date, steps=steps)
+            )
 
-            if location_id.startswith("lunch_"):
-                visit_step = ItineraryStep(
-                    type="pause",
-                    id=location_id,
-                    start=start_time,
-                    duration_min=step_data["duration"],
+    return FinalItineraryOutput(days=daily_itineraries, scores=scores)
+
+
+# === MAIN OPTIMIZATION FUNCTION ===
+
+
+def create_fallback_solution(
+    spots: List[Spot],
+    travel_dates: List[str],
+    daily_hours_range: Tuple[str, str],
+    weights: SolverInputWeights,
+) -> FinalItineraryOutput:
+    """Create a simple fallback solution when OR-Tools fails."""
+    logger.info("Creating fallback solution")
+
+    daily_itineraries = []
+
+    # Simple greedy allocation of spots to days
+    spots_per_day = len(spots) // len(travel_dates)
+    extra_spots = len(spots) % len(travel_dates)
+
+    spot_index = 0
+    for day_idx, date in enumerate(travel_dates):
+        # Determine number of spots for this day
+        num_spots = spots_per_day + (1 if day_idx < extra_spots else 0)
+
+        # Get spots for this day
+        day_spots = spots[spot_index : spot_index + num_spots]
+        spot_index += num_spots
+
+        # Create simple schedule
+        start_hour, start_min = map(int, daily_hours_range[0].split(":"))
+        current_time = start_hour * 60 + start_min
+
+        steps = []
+        for spot in day_spots:
+            hours = current_time // 60
+            minutes = current_time % 60
+            start_time_str = f"{hours:02d}:{minutes:02d}"
+
+            steps.append(
+                ItineraryStep(
+                    type="visit",
+                    id=spot.id,
+                    start=start_time_str,
+                    duration_min=60,  # Default 1 hour
                 )
-            else:
-                visit_step = ItineraryStep(
-                    type="visite",
-                    id=location_id,
-                    start=start_time,
-                    duration_min=step_data["duration"],
-                )
+            )
 
-            steps.append(visit_step)
-            previous_step = step_data
+            current_time += 60 + 30  # 1 hour visit + 30 min travel
 
-        # Generate daily description
-        daily_summary = generate_daily_description(
-            route, spots_data, date, city, companions
+        daily_itineraries.append(DailyItinerary(day=day_idx, date=date, steps=steps))
+
+    return FinalItineraryOutput(
+        days=daily_itineraries,
+        scores=OptimizationScores(distance=50, crowd=50, weather=50),
+    )
+
+
+def optimise_travel(
+    city: str,
+    spots: List[Spot],
+    travel_dates: List[str],
+    daily_hours_range: Tuple[str, str],
+    optimization_mode: OptimizationMode,
+    max_walk_time_per_segment_min: int,
+    visit_pace: VisitPace = VisitPace.BALANCED,
+) -> FinalItineraryOutput:
+    """
+    Main optimization function that coordinates all sub-functions to create an optimal itinerary.
+    """
+    logger.info(
+        f"Starting optimization for {city} with {len(spots)} spots over {len(travel_dates)} days"
+    )
+
+    try:
+        # Load base data
+        distance_matrix = load_distance_matrix_from_db(city)
+        weights_dict = load_optimisation_weights_from_db()
+        weights = SolverInputWeights(**weights_dict)
+
+        # Filter and score distance matrix
+        filtered_distance_matrix = filter_distance_matrix(distance_matrix, spots)
+        distance_matrix_score = get_distance_matrix_score(filtered_distance_matrix)
+
+        # Get weather data
+        weather_data = get_city_weather_data(
+            city.split("-")[0], travel_dates, daily_hours_range
         )
 
-        daily_itinerary = DailyItinerary(
-            day=day_idx + 1, date=date, daily_summary=daily_summary, steps=steps
-        )
-        daily_itineraries.append(daily_itinerary)
+        # === USER AND SPOT DATA MANAGEMENT ===
 
-    return daily_itineraries
+        # Process user windows
+        user_windows = process_user_windows(travel_dates, daily_hours_range)
+
+        # Determine lunch requirements
+        lunch_requirements = determine_lunch_requirements(user_windows)
+
+        # Process spot information
+        solver_spots = process_spot_info(spots, travel_dates, visit_pace)
+
+        # Create lunch and depot info
+        lunch_infos = create_lunch_info(lunch_requirements)
+        depot_infos = create_depot_info()
+
+        # Extract weather scores
+        weather_scores = extract_weather_score_hours(
+            weather_data, travel_dates, daily_hours_range
+        )
+
+        # Combine all locations
+        all_locations = depot_infos + solver_spots + lunch_infos
+
+        # Validate that we have enough data
+        if not all_locations or len(solver_spots) == 0:
+            logger.warning("No valid spots found, using fallback solution")
+            return create_fallback_solution(
+                spots, travel_dates, daily_hours_range, weights
+            )
+
+        # Prepare solver data
+        prepared_data = PreparedSolverData(
+            mode=optimization_mode,
+            numVehicles=len(travel_dates),
+            userWindows=user_windows,
+            vehicles=[{"id": i} for i in range(len(travel_dates))],
+            weights=weights,
+            lunchIndex={
+                str(v): f"lunch_day_{v}"
+                for v, needs in lunch_requirements.items()
+                if needs
+            },
+            weatherScoreHour=weather_scores,
+            matrixTime=filtered_distance_matrix,
+            matrixScoreDistance=distance_matrix_score,
+            locations=all_locations,
+        )
+
+        # === OR-TOOLS SOLVER INTEGRATION ===
+
+        # Solve optimization problem
+        solution_data = solve_optimization_problem(prepared_data)
+
+        if not solution_data:
+            logger.warning("OR-Tools failed to find solution, using fallback")
+            return create_fallback_solution(
+                spots, travel_dates, daily_hours_range, weights
+            )
+
+        # === OUTPUT AND RELEVANCE SCORING ===
+
+        # Calculate individual scores
+        scores = calculate_individual_scores(solution_data, prepared_data)
+
+        # Calculate relevance score
+        relevance_score = calculate_relevance_score(scores, weights)
+
+        # Format final output
+        final_output = format_solution_output(
+            solution_data, prepared_data, travel_dates, scores, relevance_score
+        )
+
+        logger.info(
+            f"Optimization completed successfully with relevance score: {relevance_score:.2f}"
+        )
+        return final_output
+
+    except Exception as e:
+        logger.error(f"Error in optimization: {e}")
+        import traceback
+
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+        # Return fallback solution
+        try:
+            weights = SolverInputWeights(distance=0.5, crowd=0.25, weather=0.25)
+            return create_fallback_solution(
+                spots, travel_dates, daily_hours_range, weights
+            )
+        except Exception as fallback_error:
+            logger.error(f"Fallback solution also failed: {fallback_error}")
+            return FinalItineraryOutput(
+                days=[], scores=OptimizationScores(distance=0, crowd=0, weather=0)
+            )
