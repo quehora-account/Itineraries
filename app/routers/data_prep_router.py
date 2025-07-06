@@ -47,17 +47,14 @@ def get_distance_endpoint(
 
 
 @data_prep_router.post("/compute-all-distances", response_model=MatrixTime)
-def compute_all_distances_endpoint(max_walk_time_per_segment_min: int = 30):
-    print(
-        f"Computing all distances with max_walk_time_per_segment_min: {max_walk_time_per_segment_min}"
-    )
+def compute_all_distances_endpoint():
     spots = get_all_spots_from_db()
     print(f"Found {len(spots)} spots")
-    matrix_time = get_distance_matrix(spots, max_walk_time_per_segment_min)
+    matrix_time = get_distance_matrix(spots)
     print(f"Matrix time: {matrix_time}")
 
     # Save the computed matrices to the database
-    save_distance_matrices_to_db(matrix_time, max_walk_time_per_segment_min)
+    save_distance_matrices_to_db(matrix_time)
 
     return matrix_time
 

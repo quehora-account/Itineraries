@@ -5,6 +5,18 @@ import requests
 from enum import Enum
 import time
 
+app_id = "2fb43759"
+api_key = "3dc56850237343f7ca9ddaa97e2be710"
+
+headers = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-Application-Id": app_id,
+    "X-Api-Key": api_key,
+}
+
+url = "https://api.traveltimeapp.com/v4/time-filter/fast"
+
 
 def get_cities_matrix(spots: List[Spot]) -> Dict[str, MatrixTime]:
     """Get the matrix for all cities"""
@@ -54,107 +66,129 @@ def get_city_matrix(spots: List[Spot]) -> List[Dict[str, Any]]:
     return travels
 
 
+def get_travel_data(city, source, destinations, transportation="public_transport"):
+    print(f"Processing city {city}: {source['id']} with {len(destinations)} spots")
+
+    locations = [source, *destinations]
+
+    data = {
+        "arrival_searches": {
+            "one_to_many": [
+                {
+                    "id": f"to_{source['id']}",
+                    "departure_location_id": source["id"],
+                    "arrival_location_ids": [
+                        destination["id"] for destination in destinations
+                    ],
+                    "transportation": {"type": transportation},
+                    "travel_time": 7200,
+                    "arrival_time_period": "weekday_morning",
+                    "properties": ["travel_time", "distance"],
+                }
+            ]
+        },
+        "locations": locations,
+    }
+
+    time.sleep(1)
+    response = requests.post(url, headers=headers, json=data)
+    response.raise_for_status()
+    data = response.json()
+
+    return data
+
+
 def calculate_travel_time_matrix_batch(
-    city_matrix: List[Dict[str, Any]], max_walk_time_per_segment_min: int = 30
+    travel: Dict[str, Any],
+    city,
+    transportation: str = "public_transport",
+    retry_count: int = 0,
 ) -> Dict[str, TravelSegment]:
     """
     Calculate travel time matrix using TravelTime API's many-to-one batch requests.
     For each destination spot, get travel times from all other spots to minimize API calls.
     """
-    app_id = "2fb43759"
-    api_key = "3dc56850237343f7ca9ddaa97e2be710"
-
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "X-Application-Id": app_id,
-        "X-Api-Key": api_key,
-    }
-
-    url = "https://api.traveltimeapp.com/v4/time-filter/fast"
 
     matrix_time_segments = {}
 
-    # Process each city
-    for city in city_matrix:
-        city_travel = city_matrix[city]
-
-        for travel in city_travel:
-            print(
-                f"Processing city {city}: {travel['source']['id']} with {len(travel['destinations'])} spots"
-            )
-
-            source_spot = travel["source"]
-            destinations_spots = travel["destinations"]
-
-            locations = [source_spot, *destinations_spots]
-
-            data = {
-                "arrival_searches": {
-                    "one_to_many": [
-                        {
-                            "id": f"to_{source_spot['id']}",
-                            "departure_location_id": source_spot["id"],
-                            "arrival_location_ids": [
-                                destination_spot["id"]
-                                for destination_spot in destinations_spots
-                            ],
-                            "transportation": {"type": "public_transport"},
-                            "travel_time": 7200,
-                            "arrival_time_period": "weekday_morning",
-                            "properties": ["travel_time", "distance"],
-                        }
-                    ]
-                },
-                "locations": locations,
-            }
-
-            try:
-                time.sleep(1)
-                response = requests.post(url, headers=headers, json=data)
-                response.raise_for_status()
-                data = response.json()
-
-                for search_result in data["results"]:
-                    for location in search_result["locations"]:
-                        travel_time = location["properties"]["travel_time"]
-                        distance = location["properties"]["distance"]
-
-                        if distance < 2500:
-                            mode = TravelMode.WALK
-                        else:
-                            mode = TravelMode.TRANSPORT
-
-                        matrix_time_segments[
-                            f"{source_spot['id']}-{location['id']}"
-                        ] = TravelSegment(duree=travel_time, type=mode)
-
-                        matrix_time_segments[
-                            f"{location['id']}-{source_spot['id']}"
-                        ] = TravelSegment(duree=travel_time, type=mode)
-
-            except Exception as e:
-                print(f"Error processing city {city}: {e}")
-
-    matrix_time = MatrixTime(
-        segments=matrix_time_segments,
+    source_spot = travel["source"]
+    data = get_travel_data(
+        city, travel["source"], travel["destinations"], transportation
     )
 
-    return matrix_time
+    for search_result in data["results"]:
+        for location in search_result["locations"]:
+            travel_time = location["properties"]["travel_time"]
+            distance = location["properties"]["distance"]
+
+            mode = TravelMode.TRANSPORT
+
+            matrix_time_segments[f"{source_spot['id']}-{location['id']}"] = (
+                TravelSegment(duree=travel_time, type=mode, distance=distance)
+            )
+
+            matrix_time_segments[f"{location['id']}-{source_spot['id']}"] = (
+                TravelSegment(duree=travel_time, type=mode, distance=distance)
+            )
+
+        unreachables = search_result["unreachable"]
+        unreachable_destinations = [
+            destination
+            for destination in travel["destinations"]
+            if destination["id"] in unreachables
+        ]
+        if len(unreachable_destinations) > 0:
+            print(
+                f"Unreachable destinations for {source_spot['id']}: {unreachable_destinations}, retry count: {retry_count}"
+            )
+
+            if retry_count < 2:
+                # Retry with walking mode
+                new_travel = {
+                    "source": source_spot,
+                    "destinations": unreachable_destinations,
+                }
+                retry_segments = calculate_travel_time_matrix_batch(
+                    new_travel,
+                    city,
+                    transportation="walking",
+                    retry_count=retry_count + 1,
+                )
+                # Merge the retry results into the main matrix
+                matrix_time_segments.update(retry_segments)
+            else:
+                # Max retries reached, set duree to 99999 for unreachable destinations
+                print(
+                    f"Max retries reached for unreachable destinations. Setting duree to 99999."
+                )
+                for destination in unreachable_destinations:
+                    matrix_time_segments[f"{source_spot['id']}-{destination['id']}"] = (
+                        TravelSegment(
+                            duree=99999, type=TravelMode.TRANSPORT, distance=0
+                        )
+                    )
+                    matrix_time_segments[f"{destination['id']}-{source_spot['id']}"] = (
+                        TravelSegment(
+                            duree=99999, type=TravelMode.TRANSPORT, distance=0
+                        )
+                    )
+
+    return matrix_time_segments
 
 
-def get_distance_matrix(
-    spots: List[Spot], max_walk_time_per_segment_min: int = 30
-) -> MatrixTime:
+def get_distance_matrix(spots: List[Spot]) -> MatrixTime:
     """
     Compute the travel time and distance score matrices for a list of spots.
     Uses TravelTime API's many-to-one batch requests to minimize API calls.
     """
     cities_matrix = get_cities_matrix(spots)
 
-    matrix_time_segments = calculate_travel_time_matrix_batch(
-        cities_matrix, max_walk_time_per_segment_min
-    )
+    # Process each city
+    for city in cities_matrix:
+        city_travel = cities_matrix[city]
+
+        for travel in city_travel:
+            matrix_time_segments = calculate_travel_time_matrix_batch(travel, city)
 
     return matrix_time_segments
 

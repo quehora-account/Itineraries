@@ -201,6 +201,7 @@ class ValidationResponse(BaseModel):
 
 class TravelSegment(BaseModel):
     duree: float
+    distance: float
     type: TravelMode
 
 

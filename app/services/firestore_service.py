@@ -81,14 +81,12 @@ async def update_spot_embedding_in_db(spot_id: str, embedding: Vector):
 
 def save_distance_matrices_to_db(
     matrix_time: MatrixTime,
-    max_walk_time_per_segment_min: int = 30,
 ):
     """Save the computed distance matrices to the database."""
-    doc_id = f"distance_matrix_{max_walk_time_per_segment_min}min"
+    doc_id = f"distance_matrix"
 
     matrix_data = {
-        "matrix_time": json.dumps(matrix_time.model_dump()),
-        "max_walk_time_per_segment_min": max_walk_time_per_segment_min,
+        "matrix_time": matrix_time.model_dump(),
         "computed_at": firestore.SERVER_TIMESTAMP,
     }
 
@@ -97,13 +95,11 @@ def save_distance_matrices_to_db(
     print(f"Distance matrices saved to database with ID: {doc_id}")
 
 
-def load_distance_matrix_from_db(
-    spots: List[Spot], max_walk_time_per_segment_min: int = 30
-) -> MatrixTime:
+def load_distance_matrix_from_db(spots: List[Spot]) -> MatrixTime:
     """Load the distance matrix from the database"""
     spots_ids = [spot.id for spot in spots]
     doc_ref = store.collection("distance_matrices").document(
-        f"distance_matrix_{max_walk_time_per_segment_min}min_{len(spots_ids)}spots"
+        f"distance_matrix_{len(spots_ids)}spots"
     )
     doc = doc_ref.get()
     return MatrixTime(**doc.to_dict()["matrix_time"])
