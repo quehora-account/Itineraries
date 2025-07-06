@@ -183,14 +183,18 @@ def get_distance_matrix(spots: List[Spot]) -> MatrixTime:
     """
     cities_matrix = get_cities_matrix(spots)
 
+    # Initialize combined matrix_time_segments
+    combined_matrix_time_segments = {}
+
     # Process each city
     for city in cities_matrix:
         city_travel = cities_matrix[city]
 
         for travel in city_travel:
             matrix_time_segments = calculate_travel_time_matrix_batch(travel, city)
+            combined_matrix_time_segments.update(matrix_time_segments)
 
-    return matrix_time_segments
+    return MatrixTime(segments=combined_matrix_time_segments)
 
 
 def load_distance_matrix(spots: List[Spot]):
