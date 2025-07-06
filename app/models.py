@@ -313,9 +313,28 @@ class OptimizationScores(BaseModel):
     distance: Optional[float] = None
 
 
+class DailySummary(BaseModel):
+    """Daily summary containing scores and AI-generated description."""
+
+    date: str
+    distance_score: float
+    crowd_score: Optional[float] = None
+    weather_score: Optional[float] = None
+    ai_description: str
+
+
+class StepScores(BaseModel):
+    """Scores for individual itinerary steps."""
+
+    crowd_percentage: float
+    weather_percentage: float
+    distance_cost: float = 0.0
+
+
 class FinalItineraryOutput(BaseModel):
     days: List[DailyItinerary]
     scores: Optional[OptimizationScores] = None
+    daily_summaries: Optional[List[DailySummary]] = None
 
 
 # Simplified models for select-spots endpoint

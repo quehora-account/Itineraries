@@ -19,6 +19,8 @@ from app.models import (
     CityWeatherData,
     VisitPace,
     LocationType,
+    DailySummary,
+    StepScores,
 )
 from app.services.firestore_service import (
     load_distance_matrix_from_db,
@@ -28,6 +30,7 @@ from app.services.weather import get_city_weather_data
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 import logging
+from app.services.utils import client
 
 logger = logging.getLogger(__name__)
 
@@ -428,13 +431,34 @@ def solve_optimization_problem(
         distance_callback_index = routing.RegisterTransitCallback(distance_callback)
         routing.SetArcCostEvaluatorOfAllVehicles(distance_callback_index)
 
-        # Add time dimension with service times
+        # Add time dimension with service times + travel times
         def time_callback(from_index, to_index):
+            from_node = manager.IndexToNode(from_index)
             to_node = manager.IndexToNode(to_index)
+
+            from_location = prepared_data.locations[from_node]
             to_location = prepared_data.locations[to_node]
 
-            # Return service time at destination
-            return to_location.dur
+            # Travel time from origin to destination
+            travel_time = 0
+            if not from_location.id.startswith(
+                "depot"
+            ) and not to_location.id.startswith("depot"):
+                # Look up travel time in distance matrix
+                key = f"{from_location.id}-{to_location.id}"
+                if key in prepared_data.matrixTime.segments:
+                    travel_time = int(
+                        prepared_data.matrixTime.segments[key].duree
+                    )  # duree is in minutes
+                else:
+                    # Default travel time if not found
+                    travel_time = 15  # 15 minutes default
+
+            # Service time at destination
+            service_time = to_location.dur
+
+            # Total time = travel time + service time
+            return travel_time + service_time
 
         time_callback_index = routing.RegisterTransitCallback(time_callback)
 
@@ -481,6 +505,21 @@ def solve_optimization_problem(
                 index = manager.NodeToIndex(location_idx)
                 if index >= 0:
                     routing.AddDisjunction([index], penalty)
+
+        # Add vehicle assignment constraints for lunch breaks
+        for location_idx, location in enumerate(prepared_data.locations):
+            if location.id.startswith("lunch_day_"):
+                try:
+                    vehicle_id = int(location.id.split("_")[-1])
+                    if vehicle_id < num_vehicles:
+                        index = manager.NodeToIndex(location_idx)
+                        if index >= 0:
+                            # Force this lunch to only be served by the correct vehicle
+                            for v in range(num_vehicles):
+                                if v != vehicle_id:
+                                    routing.VehicleVar(index).RemoveValue(v)
+                except (ValueError, IndexError):
+                    logger.warning(f"Invalid lunch ID format: {location.id}")
 
         # Configure search parameters
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
@@ -634,7 +673,9 @@ def format_solution_output(
             date = travel_dates[vehicle_id]
 
             steps = []
-            for step_data in route["route"]:
+            route_steps = route["route"]
+
+            for i, step_data in enumerate(route_steps):
                 location_id = step_data["location_id"]
                 start_time = step_data["start_time"]
                 duration = step_data["duration"]
@@ -645,24 +686,306 @@ def format_solution_output(
                 start_time_str = f"{hours:02d}:{minutes:02d}"
 
                 if not location_id.startswith("depot"):
+                    step_type = "lunch" if location_id.startswith("lunch") else "visit"
+
                     steps.append(
                         ItineraryStep(
-                            type=(
-                                "visit"
-                                if not location_id.startswith("lunch")
-                                else "lunch"
-                            ),
+                            type=step_type,
                             id=location_id,
                             start=start_time_str,
                             duration_min=duration,
                         )
                     )
 
+                    # Add travel step to next location (only for visits, not lunch)
+                    if (
+                        i < len(route_steps) - 1 and step_type == "visit"
+                    ):  # Only add transport for visits
+
+                        next_step = route_steps[i + 1]
+                        next_location_id = next_step["location_id"]
+
+                        # Skip if next is depot or lunch
+                        if not next_location_id.startswith(
+                            "depot"
+                        ) and not next_location_id.startswith("lunch"):
+
+                            # Calculate travel time and mode
+                            travel_time = 15  # Default
+                            travel_mode = "walk"  # Default mode
+
+                            key = f"{location_id}-{next_location_id}"
+                            if key in prepared_data.matrixTime.segments:
+                                segment = prepared_data.matrixTime.segments[key]
+                                travel_time = int(segment.duree)
+                                travel_mode = segment.type
+
+                            # Calculate travel start time (after visit ends)
+                            travel_start = start_time + duration
+                            travel_hours = travel_start // 60
+                            travel_minutes = travel_start % 60
+                            travel_start_str = (
+                                f"{travel_hours:02d}:{travel_minutes:02d}"
+                            )
+
+                            steps.append(
+                                ItineraryStep(
+                                    type="transport",
+                                    from_spot=location_id,
+                                    to_spot=next_location_id,
+                                    start=travel_start_str,
+                                    duration_min=travel_time,
+                                    mode=travel_mode,
+                                )
+                            )
+
             daily_itineraries.append(
                 DailyItinerary(day=vehicle_id, date=date, steps=steps)
             )
 
     return FinalItineraryOutput(days=daily_itineraries, scores=scores)
+
+
+# === DAILY SUMMARY GENERATION ===
+
+
+def calculate_step_scores(
+    step: ItineraryStep,
+    spots: List[Spot],
+    weather_data: CityWeatherData,
+    date: str,
+    distance_matrix: MatrixTime,
+) -> StepScores:
+    """Calculate crowd and weather scores for a single itinerary step."""
+
+    if step.type == "visit":
+        # Find the spot data
+        spot = next((s for s in spots if s.id == step.id), None)
+        if not spot:
+            return StepScores(crowd_percentage=50.0, weather_percentage=50.0)
+
+        # Calculate crowd score based on start time
+        start_hour = int(step.start.split(":")[0])
+        day_index = datetime.strptime(date, "%Y-%m-%d").weekday()
+        crowd_hour = calculate_crowd_hour_for_spot(spot, day_index)
+        crowd_score = crowd_hour.get(start_hour, 0.0)
+        crowd_percentage = min(100.0, max(0.0, crowd_score))
+
+        # Calculate weather score based on start time
+        weather_percentage = 50.0  # Default
+        if date in weather_data.weather_by_date:
+            date_weather = weather_data.weather_by_date[date]
+            hour_str = str(start_hour)
+            if hour_str in date_weather.hourly_data:
+                weather_percentage = (
+                    date_weather.hourly_data[hour_str].normalized_weather_score or 50.0
+                )
+
+        return StepScores(
+            crowd_percentage=crowd_percentage, weather_percentage=weather_percentage
+        )
+
+    elif step.type == "transport":
+        # For transport, use average conditions during travel time
+        start_hour = int(step.start.split(":")[0])
+
+        # Calculate distance cost
+        distance_cost = 0.0
+        if step.from_spot and step.to_spot:
+            key = f"{step.from_spot}-{step.to_spot}"
+            if key in distance_matrix.segments:
+                # Convert distance to cost (higher distance = higher cost)
+                distance = distance_matrix.segments[key].distance
+                distance_cost = distance / 1000.0  # Convert to km
+
+        # Weather score during transport
+        weather_percentage = 50.0  # Default
+        if date in weather_data.weather_by_date:
+            date_weather = weather_data.weather_by_date[date]
+            hour_str = str(start_hour)
+            if hour_str in date_weather.hourly_data:
+                weather_percentage = (
+                    date_weather.hourly_data[hour_str].normalized_weather_score or 50.0
+                )
+
+        return StepScores(
+            crowd_percentage=30.0,  # Assume moderate crowd during transport
+            weather_percentage=weather_percentage,
+            distance_cost=distance_cost,
+        )
+
+    else:  # lunch or other
+        return StepScores(crowd_percentage=50.0, weather_percentage=50.0)
+
+
+def calculate_daily_scores(
+    daily_itinerary: DailyItinerary,
+    spots: List[Spot],
+    weather_data: CityWeatherData,
+    distance_matrix: MatrixTime,
+) -> Tuple[float, float, float]:
+    """Calculate daily optimization scores (distance, crowd, weather)."""
+
+    total_distance_cost = 0.0
+    total_crowd_cost = 0.0
+    total_weather_cost = 0.0
+    visit_count = 0
+    transport_count = 0
+
+    for step in daily_itinerary.steps:
+        step_scores = calculate_step_scores(
+            step, spots, weather_data, daily_itinerary.date, distance_matrix
+        )
+
+        if step.type == "visit":
+            visit_count += 1
+            # Higher crowd percentage = higher cost (worse)
+            total_crowd_cost += 100 - step_scores.crowd_percentage
+            # Lower weather percentage = higher cost (worse)
+            total_weather_cost += 100 - step_scores.weather_percentage
+
+        elif step.type == "transport":
+            transport_count += 1
+            total_distance_cost += step_scores.distance_cost
+            # Weather affects transport too
+            total_weather_cost += (
+                100 - step_scores.weather_percentage
+            ) * 0.5  # Reduced weight for transport
+
+    # Calculate average costs
+    avg_distance_cost = total_distance_cost / max(1, transport_count)
+    avg_crowd_cost = total_crowd_cost / max(1, visit_count)
+    avg_weather_cost = total_weather_cost / max(1, visit_count + transport_count)
+
+    # Convert costs to scores (100 - cost)
+    distance_score = max(
+        0, 100 - min(100, avg_distance_cost * 10)
+    )  # Scale distance cost
+    crowd_score = max(0, 100 - min(100, avg_crowd_cost))
+    weather_score = max(0, 100 - min(100, avg_weather_cost))
+
+    return distance_score, crowd_score, weather_score
+
+
+def generate_llm_prompt(
+    daily_itinerary: DailyItinerary,
+    city: str,
+    companions: str,
+    spots: List[Spot],
+    weather_data: CityWeatherData,
+    distance_matrix: MatrixTime,
+) -> str:
+    """Generate LLM prompt for daily summary description."""
+
+    prompt_parts = [
+        "Rôle : guide de voyage.",
+        "Données :",
+        f"- Date : {daily_itinerary.date}",
+        f"- Ville : {city}",
+        f"- Voyageurs : {companions}",
+        f"- Itinéraire jour {daily_itinerary.day + 1} :",
+    ]
+
+    step_counter = 1
+    for step in daily_itinerary.steps:
+        step_scores = calculate_step_scores(
+            step, spots, weather_data, daily_itinerary.date, distance_matrix
+        )
+
+        if step.type == "visit":
+            # Find spot name
+            spot = next((s for s in spots if s.id == step.id), None)
+            spot_name = spot.name if spot else f"Spot {step.id}"
+
+            end_time = calculate_end_time(step.start, step.duration_min)
+            prompt_parts.append(
+                f"{step_counter}) Visite {spot_name} – {step.start}–{end_time} "
+                f"(affluence : {step_scores.crowd_percentage:.0f} %, "
+                f"météo : {step_scores.weather_percentage:.0f} %)"
+            )
+            step_counter += 1
+
+        elif step.type == "transport":
+            mode_french = {
+                "walk": "marche",
+                "public_transit": "transport en commun",
+                "car": "voiture",
+                "bike": "vélo",
+            }.get(step.mode, step.mode)
+
+            prompt_parts.append(
+                f"{step_counter}) Transport – {mode_french} "
+                f"({step.duration_min} min, affluence : {step_scores.crowd_percentage:.0f} %, "
+                f"météo : {step_scores.weather_percentage:.0f} %)"
+            )
+            step_counter += 1
+
+    prompt_parts.append(
+        "Tâche : rédige un paragraphe de moins de 150 caractères décrivant l'esprit de cette journée."
+    )
+
+    return "\n".join(prompt_parts)
+
+
+def calculate_end_time(start_time: str, duration_min: int) -> str:
+    """Calculate end time given start time and duration."""
+    start_hour, start_min = map(int, start_time.split(":"))
+    total_minutes = start_hour * 60 + start_min + duration_min
+
+    end_hour = (total_minutes // 60) % 24
+    end_min = total_minutes % 60
+
+    return f"{end_hour:02d}:{end_min:02d}"
+
+
+def generate_daily_summary(
+    daily_itinerary: DailyItinerary,
+    city: str,
+    companions: str,
+    spots: List[Spot],
+    weather_data: CityWeatherData,
+    distance_matrix: MatrixTime,
+    optimization_mode: OptimizationMode,
+) -> DailySummary:
+    """Generate complete daily summary with scores and AI description."""
+
+    # Calculate daily scores
+    distance_score, crowd_score, weather_score = calculate_daily_scores(
+        daily_itinerary, spots, weather_data, distance_matrix
+    )
+
+    # Generate LLM prompt
+    prompt = generate_llm_prompt(
+        daily_itinerary, city, companions, spots, weather_data, distance_matrix
+    )
+
+    print(prompt)
+
+    # Get AI description
+    ai_description = (
+        client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        .choices[0]
+        .message.content
+    )
+
+    print(ai_description)
+
+    # Adjust scores based on optimization mode
+    if optimization_mode == OptimizationMode.FREEMIUM:
+        # Only distance score is meaningful in basic mode
+        crowd_score = None
+        weather_score = None
+
+    return DailySummary(
+        date=daily_itinerary.date,
+        distance_score=distance_score,
+        crowd_score=crowd_score,
+        weather_score=weather_score,
+        ai_description=ai_description,
+    )
 
 
 # === MAIN OPTIMIZATION FUNCTION ===
@@ -673,6 +996,7 @@ def create_fallback_solution(
     travel_dates: List[str],
     daily_hours_range: Tuple[str, str],
     weights: SolverInputWeights,
+    distance_matrix: Optional[MatrixTime] = None,
 ) -> FinalItineraryOutput:
     """Create a simple fallback solution when OR-Tools fails."""
     logger.info("Creating fallback solution")
@@ -697,21 +1021,71 @@ def create_fallback_solution(
         current_time = start_hour * 60 + start_min
 
         steps = []
-        for spot in day_spots:
+        for i, spot in enumerate(day_spots):
             hours = current_time // 60
             minutes = current_time % 60
             start_time_str = f"{hours:02d}:{minutes:02d}"
+
+            # Parse visit duration
+            visit_duration = 60  # Default 1 hour
+            try:
+                duration_str = spot.visitDuration.lower().strip()
+                if "h" in duration_str:
+                    parts = duration_str.split("h")
+                    hours_part = int(parts[0])
+                    minutes_part = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+                    visit_duration = hours_part * 60 + minutes_part
+                elif "min" in duration_str:
+                    visit_duration = int(duration_str.replace("min", ""))
+                elif duration_str.isdigit():
+                    visit_duration = int(duration_str)
+            except:
+                visit_duration = 60
 
             steps.append(
                 ItineraryStep(
                     type="visit",
                     id=spot.id,
                     start=start_time_str,
-                    duration_min=60,  # Default 1 hour
+                    duration_min=visit_duration,
                 )
             )
 
-            current_time += 60 + 30  # 1 hour visit + 30 min travel
+            # Add visit duration to current time
+            current_time += visit_duration
+
+            # Add travel time to next spot
+            if i < len(day_spots) - 1:
+                next_spot = day_spots[i + 1]
+                travel_time = 30  # Default 30 minutes
+                travel_mode = "walk"  # Default mode
+
+                # Try to get actual travel time from distance matrix
+                if distance_matrix:
+                    key = f"{spot.id}-{next_spot.id}"
+                    if key in distance_matrix.segments:
+                        segment = distance_matrix.segments[key]
+                        travel_time = int(segment.duree)
+                        travel_mode = segment.type
+
+                # Add transport step
+                travel_start = current_time
+                travel_hours = travel_start // 60
+                travel_minutes = travel_start % 60
+                travel_start_str = f"{travel_hours:02d}:{travel_minutes:02d}"
+
+                steps.append(
+                    ItineraryStep(
+                        type="transport",
+                        from_spot=spot.id,
+                        to_spot=next_spot.id,
+                        start=travel_start_str,
+                        duration_min=travel_time,
+                        mode=travel_mode,
+                    )
+                )
+
+                current_time += travel_time
 
         daily_itineraries.append(DailyItinerary(day=day_idx, date=date, steps=steps))
 
@@ -729,6 +1103,7 @@ def optimise_travel(
     optimization_mode: OptimizationMode,
     max_walk_time_per_segment_min: int,
     visit_pace: VisitPace = VisitPace.BALANCED,
+    companions: str = "solo",  # Add companions parameter
 ) -> FinalItineraryOutput:
     """
     Main optimization function that coordinates all sub-functions to create an optimal itinerary.
@@ -778,9 +1153,28 @@ def optimise_travel(
         # Validate that we have enough data
         if not all_locations or len(solver_spots) == 0:
             logger.warning("No valid spots found, using fallback solution")
-            return create_fallback_solution(
-                spots, travel_dates, daily_hours_range, weights
+            fallback_output = create_fallback_solution(
+                spots,
+                travel_dates,
+                daily_hours_range,
+                weights,
+                filtered_distance_matrix,
             )
+            # Generate daily summaries for fallback
+            daily_summaries = []
+            for day in fallback_output.days:
+                summary = generate_daily_summary(
+                    day,
+                    city,
+                    companions,
+                    spots,
+                    weather_data,
+                    filtered_distance_matrix,
+                    optimization_mode,
+                )
+                daily_summaries.append(summary)
+            fallback_output.daily_summaries = daily_summaries
+            return fallback_output
 
         # Prepare solver data
         prepared_data = PreparedSolverData(
@@ -807,9 +1201,49 @@ def optimise_travel(
 
         if not solution_data:
             logger.warning("OR-Tools failed to find solution, using fallback")
-            return create_fallback_solution(
-                spots, travel_dates, daily_hours_range, weights
+            fallback_output = create_fallback_solution(
+                spots,
+                travel_dates,
+                daily_hours_range,
+                weights,
+                filtered_distance_matrix,
             )
+            # Generate daily summaries for fallback
+            daily_summaries = []
+            for day in fallback_output.days:
+                try:
+                    summary = generate_daily_summary(
+                        day,
+                        city,
+                        companions,
+                        spots,
+                        CityWeatherData(city=city, weather_by_date={}),
+                        filtered_distance_matrix or MatrixTime(segments={}),
+                        optimization_mode,
+                    )
+                    daily_summaries.append(summary)
+                except Exception as summary_error:
+                    logger.warning(f"Failed to generate daily summary: {summary_error}")
+                    # Add basic summary on failure
+                    daily_summaries.append(
+                        DailySummary(
+                            date=day.date,
+                            distance_score=50.0,
+                            crowd_score=(
+                                50.0
+                                if optimization_mode == OptimizationMode.PREMIUM
+                                else None
+                            ),
+                            weather_score=(
+                                50.0
+                                if optimization_mode == OptimizationMode.PREMIUM
+                                else None
+                            ),
+                            ai_description="Une journée soigneusement planifiée pour découvrir la ville.",
+                        )
+                    )
+            fallback_output.daily_summaries = daily_summaries
+            return fallback_output
 
         # === OUTPUT AND RELEVANCE SCORING ===
 
@@ -823,6 +1257,23 @@ def optimise_travel(
         final_output = format_solution_output(
             solution_data, prepared_data, travel_dates, scores, relevance_score
         )
+
+        # Generate daily summaries
+        daily_summaries = []
+        for day in final_output.days:
+            summary = generate_daily_summary(
+                day,
+                city,
+                companions,
+                spots,
+                weather_data,
+                filtered_distance_matrix,
+                optimization_mode,
+            )
+            daily_summaries.append(summary)
+
+        # Add daily summaries to output
+        final_output.daily_summaries = daily_summaries
 
         logger.info(
             f"Optimization completed successfully with relevance score: {relevance_score:.2f}"
@@ -838,11 +1289,61 @@ def optimise_travel(
         # Return fallback solution
         try:
             weights = SolverInputWeights(distance=0.5, crowd=0.25, weather=0.25)
-            return create_fallback_solution(
-                spots, travel_dates, daily_hours_range, weights
+            # Try to load distance matrix for fallback
+            try:
+                distance_matrix = load_distance_matrix_from_db(city)
+                filtered_distance_matrix = filter_distance_matrix(
+                    distance_matrix, spots
+                )
+            except:
+                filtered_distance_matrix = None
+            fallback_output = create_fallback_solution(
+                spots,
+                travel_dates,
+                daily_hours_range,
+                weights,
+                filtered_distance_matrix,
             )
+            # Generate daily summaries for fallback
+            daily_summaries = []
+            for day in fallback_output.days:
+                try:
+                    summary = generate_daily_summary(
+                        day,
+                        city,
+                        companions,
+                        spots,
+                        CityWeatherData(city=city, weather_by_date={}),
+                        filtered_distance_matrix or MatrixTime(segments={}),
+                        optimization_mode,
+                    )
+                    daily_summaries.append(summary)
+                except Exception as summary_error:
+                    logger.warning(f"Failed to generate daily summary: {summary_error}")
+                    # Add basic summary on failure
+                    daily_summaries.append(
+                        DailySummary(
+                            date=day.date,
+                            distance_score=50.0,
+                            crowd_score=(
+                                50.0
+                                if optimization_mode == OptimizationMode.PREMIUM
+                                else None
+                            ),
+                            weather_score=(
+                                50.0
+                                if optimization_mode == OptimizationMode.PREMIUM
+                                else None
+                            ),
+                            ai_description="Une journée soigneusement planifiée pour découvrir la ville.",
+                        )
+                    )
+            fallback_output.daily_summaries = daily_summaries
+            return fallback_output
         except Exception as fallback_error:
             logger.error(f"Fallback solution also failed: {fallback_error}")
             return FinalItineraryOutput(
-                days=[], scores=OptimizationScores(distance=0, crowd=0, weather=0)
+                days=[],
+                scores=OptimizationScores(distance=0, crowd=0, weather=0),
+                daily_summaries=[],
             )

@@ -6,6 +6,7 @@ from app.models import (
     SimpleTimeGauge,
     FinalItineraryOutput,
     SimplifiedSpot,
+    VisitPace,
 )
 from app.services.weather import get_city_weather_data
 from app.services.firestore_service import (
@@ -105,10 +106,12 @@ def default_simple_time_gauge():
 async def optimise_itinerary_endpoint(
     data: SimpleTimeGauge = default_simple_time_gauge(),
     city: str = "Paris-city",
-    travel_dates: List[str] = ["2025-07-14", "2025-07-12"],
+    travel_dates: List[str] = ["2025-07-12", "2025-07-13"],
     daily_hours_range: Tuple[str, str] = ("08:00", "18:00"),
     optimization_mode: OptimizationMode = OptimizationMode.FREEMIUM,
     max_walk_time_per_segment_min: int = 30,
+    companions: str = "solo",
+    visit_pace: VisitPace = VisitPace.BALANCED,
 ):
     if not travel_dates:
         raise HTTPException(status_code=400, detail="Travel dates must be provided.")
@@ -133,6 +136,8 @@ async def optimise_itinerary_endpoint(
         daily_hours_range,
         optimization_mode,
         max_walk_time_per_segment_min,
+        visit_pace=visit_pace,
+        companions=companions,
     )
 
     return optimised_travel
