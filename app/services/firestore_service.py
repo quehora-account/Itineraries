@@ -85,8 +85,18 @@ def save_distance_matrices_to_db(
     """Save the computed distance matrices to the database."""
     doc_id = f"distance_matrix"
 
+    # Convert to dictionary structure explicitly to ensure proper Firestore map format
+    matrix_dict = {"segments": {}}
+
+    for key, segment in matrix_time.segments.items():
+        matrix_dict["segments"][key] = {
+            "duree": segment.duree,
+            "distance": segment.distance,
+            "type": segment.type.value,  # Convert enum to string value
+        }
+
     matrix_data = {
-        "matrix_time": matrix_time.model_dump(),
+        "matrix_time": matrix_dict,
         "computed_at": firestore.SERVER_TIMESTAMP,
     }
 
@@ -97,9 +107,11 @@ def save_distance_matrices_to_db(
 
 def load_distance_matrix_from_db(spots: List[Spot]) -> MatrixTime:
     """Load the distance matrix from the database"""
-    spots_ids = [spot.id for spot in spots]
-    doc_ref = store.collection("distance_matrices").document(
-        f"distance_matrix_{len(spots_ids)}spots"
-    )
+    # Fixed document ID to match what's being saved
+    doc_ref = store.collection("distance_matrices").document("distance_matrix")
     doc = doc_ref.get()
+
+    if not doc.exists:
+        raise ValueError("Distance matrix not found in database")
+
     return MatrixTime(**doc.to_dict()["matrix_time"])
