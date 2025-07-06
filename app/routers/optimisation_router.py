@@ -7,10 +7,10 @@ from app.models import (
     FinalItineraryOutput,
 )
 from app.services.weather import load_city_weather_from_db
-from app.services.distance import (
-    get_distance_matrix,
+from app.services.firestore_service import (
+    get_spot_from_db,
+    load_distance_matrix_from_db,
 )
-from app.services.firestore_service import get_spot_from_db
 from app.services.optimisation import (
     prepare_optimization_data,
     solve_vrp,
@@ -51,8 +51,7 @@ async def optimise_itinerary_endpoint(
             raise HTTPException(status_code=404, detail=f"Spot {spot.id} not found")
         spots_data.append(spot_data)
 
-    # Get distance matrix
-    distance_matrix, _ = get_distance_matrix(spots_data, max_walk_time_per_segment_min)
+    distance_matrix = load_distance_matrix_from_db(spots_data)
 
     # Prepare optimization data
     solver_data = prepare_optimization_data(

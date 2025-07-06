@@ -10,7 +10,7 @@ from app.models import (
     MatrixScoreDistance,
 )
 from app.core.config import settings
-from typing import List, Optional
+from typing import List, Optional, Dict
 from google.cloud.firestore_v1.vector import Vector
 from google.cloud.firestore_v1._helpers import GeoPoint as FirestoreGeoPoint
 
@@ -80,29 +80,30 @@ async def update_spot_embedding_in_db(spot_id: str, embedding: Vector):
 
 
 def save_distance_matrices_to_db(
-    matrix_time: MatrixTime,
+    cities_matrix: Dict[str, MatrixTime],
 ):
     """Save the computed distance matrices to the database."""
-    doc_id = f"distance_matrix"
+    for city, matrix_time in cities_matrix.items():
+        doc_id = city
 
-    # Convert to dictionary structure explicitly to ensure proper Firestore map format
-    matrix_dict = {"segments": {}}
+        # Convert to dictionary structure explicitly to ensure proper Firestore map format
+        matrix_dict = {"segments": {}}
 
-    for key, segment in matrix_time.segments.items():
-        matrix_dict["segments"][key] = {
-            "duree": segment.duree,
-            "distance": segment.distance,
-            "type": segment.type.value,  # Convert enum to string value
+        for key, segment in matrix_time.segments.items():
+            matrix_dict["segments"][key] = {
+                "duree": segment.duree,
+                "distance": segment.distance,
+                "type": segment.type.value,  # Convert enum to string value
+            }
+
+        matrix_data = {
+            "matrix_time": matrix_dict,
+            "computed_at": firestore.SERVER_TIMESTAMP,
         }
 
-    matrix_data = {
-        "matrix_time": matrix_dict,
-        "computed_at": firestore.SERVER_TIMESTAMP,
-    }
-
-    doc_ref = store.collection("distance_matrices").document(doc_id)
-    doc_ref.set(matrix_data)
-    print(f"Distance matrices saved to database with ID: {doc_id}")
+        doc_ref = store.collection("distance_matrices").document(doc_id)
+        doc_ref.set(matrix_data)
+        print(f"Distance matrices saved to database with ID: {doc_id}")
 
 
 def load_distance_matrix_from_db(spots: List[Spot]) -> MatrixTime:

@@ -46,17 +46,16 @@ def get_distance_endpoint(
     return get_distance_matrix(spots_to_process, max_walk_time_per_segment_min)
 
 
-@data_prep_router.post("/compute-all-distances", response_model=MatrixTime)
+@data_prep_router.post("/compute-all-distances", response_model=Dict[str, MatrixTime])
 def compute_all_distances_endpoint():
     spots = get_all_spots_from_db()
     print(f"Found {len(spots)} spots")
-    matrix_time = get_distance_matrix(spots)
-    print(f"Matrix time: {matrix_time}")
+    cities_matrix = get_distance_matrix(spots)
 
     # Save the computed matrices to the database
-    save_distance_matrices_to_db(matrix_time)
+    save_distance_matrices_to_db(cities_matrix)
 
-    return matrix_time
+    return cities_matrix
 
 
 @data_prep_router.post("/weather-data", response_model=CityWeatherData)

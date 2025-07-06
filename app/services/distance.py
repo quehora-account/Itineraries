@@ -176,25 +176,28 @@ def calculate_travel_time_matrix_batch(
     return matrix_time_segments
 
 
-def get_distance_matrix(spots: List[Spot]) -> MatrixTime:
+def get_distance_matrix(spots: List[Spot]) -> Dict[str, MatrixTime]:
     """
     Compute the travel time and distance score matrices for a list of spots.
     Uses TravelTime API's many-to-one batch requests to minimize API calls.
     """
     cities_matrix = get_cities_matrix(spots)
 
-    # Initialize combined matrix_time_segments
-    combined_matrix_time_segments = {}
+    result = {}
 
     # Process each city
     for city in cities_matrix:
         city_travel = cities_matrix[city]
 
+        city_matrix = {}
+
         for travel in city_travel:
             matrix_time_segments = calculate_travel_time_matrix_batch(travel, city)
-            combined_matrix_time_segments.update(matrix_time_segments)
+            city_matrix.update(matrix_time_segments)
 
-    return MatrixTime(segments=combined_matrix_time_segments)
+        result[city] = MatrixTime(segments=city_matrix)
+
+    return result
 
 
 def load_distance_matrix(spots: List[Spot]):
