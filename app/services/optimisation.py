@@ -22,6 +22,7 @@ from app.models import (
     DailySummary,
     StepScores,
 )
+from app.enums import TravelMode
 from app.services.firestore_service import (
     load_distance_matrix_from_db,
     load_optimisation_weights_from_db,
@@ -688,12 +689,30 @@ def format_solution_output(
                 if not location_id.startswith("depot"):
                     step_type = "lunch" if location_id.startswith("lunch") else "visit"
 
+                    # Determine from/to for visit and lunch steps
+                    from_location = None
+                    to_location = None
+
+                    if i > 0:
+                        # Get previous non-depot location
+                        prev_step = route_steps[i - 1]
+                        if not prev_step["location_id"].startswith("depot"):
+                            from_location = prev_step["location_id"]
+
+                    if i < len(route_steps) - 1:
+                        # Get next non-depot location
+                        next_step = route_steps[i + 1]
+                        if not next_step["location_id"].startswith("depot"):
+                            to_location = next_step["location_id"]
+
                     steps.append(
                         ItineraryStep(
                             type=step_type,
                             id=location_id,
                             start=start_time_str,
                             duration_min=duration,
+                            **{"from": from_location, "to": to_location},
+                            mode=None,  # No transport mode for visit/lunch steps
                         )
                     )
 
@@ -731,8 +750,7 @@ def format_solution_output(
                             steps.append(
                                 ItineraryStep(
                                     type="transport",
-                                    from_spot=location_id,
-                                    to_spot=next_location_id,
+                                    **{"from": location_id, "to": next_location_id},
                                     start=travel_start_str,
                                     duration_min=travel_time,
                                     mode=travel_mode,
@@ -958,8 +976,6 @@ def generate_daily_summary(
     prompt = generate_llm_prompt(
         daily_itinerary, city, companions, spots, weather_data, distance_matrix
     )
-
-    print(prompt)
 
     # Get AI description
     ai_description = (

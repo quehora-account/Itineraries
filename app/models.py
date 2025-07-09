@@ -3,7 +3,6 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from app.enums import (
     TravelMode,
-    BudgetCategory,
     TravelCompanion,
     VisitPace,
     OptimizationMode,
@@ -21,7 +20,7 @@ class SpotUserPreferences(BaseModel):
         description="List of dates in YYYY-MM-DD format",
         example=["2024-07-10", "2024-07-12"],
     )
-    budget: Optional[BudgetCategory] = Field(None, example=BudgetCategory.BALANCED)
+    free_only: bool = Field(default=False, example=False)
     companions: TravelCompanion = Field(..., example=TravelCompanion.COUPLE)
     has_children: bool = Field(..., example=False)
     activity_types: List[str] = Field(..., max_items=3, example=["Culture", "Histoire"])

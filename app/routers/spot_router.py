@@ -2,7 +2,12 @@ from fastapi import APIRouter, HTTPException, Path
 from typing import List
 import math
 from datetime import datetime
-from app.models import SpotUserPreferences, MatchedSpot, SimplifiedMatchedSpot
+from app.models import (
+    SpotUserPreferences,
+    MatchedSpot,
+    SimplifiedMatchedSpot,
+    VisitPace,
+)
 from app.services.utils import (
     get_embedding,
     cosine_similarity,
@@ -18,6 +23,7 @@ from app.services.firestore_service import (
     update_spot_embedding_in_db,
     get_spot_from_db,
 )
+
 
 spots_router = APIRouter(prefix="/spots", tags=["Spots"])
 
@@ -52,13 +58,11 @@ async def find_spots(preferences: SpotUserPreferences):
     # Filter spots by opening hours for the selected dates
     spots_with_valid_hours = []
     for spot in filtered_spots:
-        is_valid = True
+        is_valid_for_any_date = False
 
         # Calculate visit duration for this spot (assuming balanced pace as default)
         standard_duration_min = parse_visit_duration_to_minutes(spot.visitDuration)
         # Use balanced pace as default for filtering (can be adjusted later)
-        from app.models import VisitPace
-
         visit_duration_min = get_adjusted_visit_duration(
             standard_duration_min, VisitPace.BALANCED
         )
@@ -68,16 +72,16 @@ async def find_spots(preferences: SpotUserPreferences):
             date_obj = datetime.strptime(date_str, "%Y-%m-%d")
             weekday = date_obj.weekday()  # 0 = Monday, 6 = Sunday
 
+            # Condition 1: Check if spot is open on this weekday
+            # Exclude spots that are closed on this day
+            if weekday >= len(spot.openHours) or not spot.openHours[weekday].hours:
+                # Spot is closed on this day, skip to next date
+                continue
+
             # Get user's availability for this date
             start_time, end_time = preferences.hourly_availability[date_str]
             start_user_min = time_str_to_minutes(start_time)
             end_user_min = time_str_to_minutes(end_time)
-
-            # Condition 1: Check if spot is open on this weekday
-            if weekday >= len(spot.openHours) or not spot.openHours[weekday].hours:
-                # Spot is closed on this day
-                is_valid = False
-                break
 
             # Condition 2: Check if there's sufficient overlap for the visit
             has_sufficient_overlap = False
@@ -98,11 +102,12 @@ async def find_spots(preferences: SpotUserPreferences):
                         has_sufficient_overlap = True
                         break
 
-            if not has_sufficient_overlap:
-                is_valid = False
+            if has_sufficient_overlap:
+                is_valid_for_any_date = True
                 break
 
-        if is_valid:
+        # Only add spot if it's valid for at least one date
+        if is_valid_for_any_date:
             spots_with_valid_hours.append(spot)
 
     if not spots_with_valid_hours:
@@ -111,10 +116,21 @@ async def find_spots(preferences: SpotUserPreferences):
             detail=f"No spots found for destination {preferences.destination} and dates {preferences.travel_dates}",
         )
 
+    # Filter spots by free_only preference
+    if preferences.free_only:
+        spots_with_valid_hours = [
+            spot
+            for spot in spots_with_valid_hours
+            if spot.fullPrice and spot.fullPrice.price == "Gratuit"
+        ]
+        if not spots_with_valid_hours:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No free spots found for destination {preferences.destination} and dates {preferences.travel_dates}",
+            )
+
     print("Computing user embedding")
     pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.activity_types)}"
-    if preferences.budget:
-        pref_text += f", Budget: {preferences.budget.value}"
     user_emb = get_embedding(pref_text)
 
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
