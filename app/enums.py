@@ -45,10 +45,10 @@ class GeoPoint(BaseModel):
 
 
 class TravelCompanion(str, Enum):
-    SOLO = "solo"
-    COUPLE = "couple"
-    FRIENDS = "amis"
-    FAMILY = "famille"
+    SOLO = "en solo"
+    COUPLE = "en couple"
+    FRIENDS = "entre amis"
+    FAMILY = "en famille"
 
 
 class VisitPace(str, Enum):

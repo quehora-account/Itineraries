@@ -13,7 +13,6 @@ from app.services.utils import (
     cosine_similarity,
     get_embeddings_batch,
     time_str_to_minutes,
-    generate_tarif_description,
     parse_visit_duration_to_minutes,
     get_adjusted_visit_duration,
 )
@@ -130,7 +129,12 @@ async def find_spots(preferences: SpotUserPreferences):
             )
 
     print("Computing user embedding")
-    pref_text = f"Destination: {preferences.destination}, Activities: {', '.join(preferences.activity_types)}"
+    accompagnants = preferences.companions.value
+    enfants_fragment = ", avec des enfants" if preferences.has_children else ""
+    centres_interet = ", ".join(preferences.activity_types)
+
+    pref_text = f"Je visite {accompagnants}{enfants_fragment}, et je m'intéresse à {centres_interet}."
+    print(pref_text)
     user_emb = get_embedding(pref_text)
 
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
