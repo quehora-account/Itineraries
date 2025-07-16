@@ -22,6 +22,7 @@ from app.services.firestore_service import (
     update_spot_embedding_in_db,
     get_spot_from_db,
 )
+from tqdm import tqdm
 
 
 spots_router = APIRouter(prefix="/spots", tags=["Spots"])
@@ -134,7 +135,6 @@ async def find_spots(preferences: SpotUserPreferences):
     centres_interet = ", ".join(preferences.activity_types)
 
     pref_text = f"Je visite {accompagnants}{enfants_fragment}, et je m'intéresse à {centres_interet}."
-    print(pref_text)
     user_emb = get_embedding(pref_text)
 
     all_playlists = {playlist.id: playlist for playlist in all_playlists_list}
@@ -169,29 +169,33 @@ async def find_spots(preferences: SpotUserPreferences):
         cosine_similarity(user_emb, spot_obj.embedding)
         for spot_obj in spots_with_valid_hours
     ]
-    min_sim = min(similarities)
-    max_sim = max(similarities)
+    min_score = min(similarities)
+    max_score_similarity = max(similarities)
+
+    # Normalisation des scores de similarité sur [45, 95]
     base = 45
     top = 95
 
     for spot_obj, similarity in zip(spots_with_valid_hours, similarities):
-        # Normalisation du score de similarité sur [45, 95]
-        if max_sim == min_sim:
-            normalized_similarity = (base + top) // 2
+        # Normalisation du score de similarité sur [45, 95] selon la formule spécifiée
+        if max_score_similarity == min_score:
+            normalized_similarity = round((base + top) / 2)
         else:
             normalized_similarity = round(
-                base + ((similarity - min_sim) / (max_sim - min_sim)) * (top - base)
+                base
+                + ((similarity - min_score) / (max_score_similarity - min_score))
+                * (top - base)
             )
-        # Use logarithmic normalization for popularity
+
         normalized_popularity = math.log(1 + spot_obj.score) / math.log(1 + max_score)
-        final_score = 0.8 * similarity + 0.2 * normalized_popularity
-        # Convert to percentage
-        match_percent = round(final_score * 100)
+        match_percent = round(normalized_similarity * 100)
+        print(f"Normalized similarity: {normalized_similarity}")
+        print(f"Match percent: {match_percent}")
 
         matched_spots_list.append(
             MatchedSpot(
                 spot=spot_obj,
-                final_score=final_score,
+                final_score=normalized_popularity,
                 similarity_score=normalized_similarity,  # Champ normalisé en %
                 normalized_popularity=normalized_popularity,
                 match_percent=match_percent,
@@ -248,3 +252,11 @@ async def compute_spot_embedding(
     await update_spot_embedding_in_db(spot.id, embedding)
     spot.embedding = embedding
     return spot
+
+
+@spots_router.post("/compute-embeddings")
+async def compute_embeddings():
+    all_spots = get_all_spots_from_db()
+    for spot in tqdm(all_spots):
+        print(f"Computing embedding for spot {spot.id}")
+        await compute_spot_embedding(spot.id)
