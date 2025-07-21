@@ -1,21 +1,17 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from typing import List, Tuple
 
 from app.models import (
     OptimizationMode,
-    SimpleTimeGauge,
+    OptimizeTime,
     FinalItineraryOutput,
     SimplifiedSpot,
     VisitPace,
 )
-from app.services.weather import get_city_weather_data
 from app.services.firestore_service import (
     get_spot_from_db,
-    load_distance_matrix_from_db,
-    load_optimisation_weights_from_db,
 )
 from app.services.optimisation import (
-    filter_distance_matrix,
     optimise_travel,
 )
 
@@ -23,7 +19,7 @@ optimisation_router = APIRouter(prefix="/optimisation", tags=["Itinerary Optimis
 
 
 def default_simple_time_gauge():
-    return SimpleTimeGauge(
+    return OptimizeTime(
         spots=[
             SimplifiedSpot(
                 id="71sKTux0pjVafHBlebaE",
@@ -98,13 +94,12 @@ def default_simple_time_gauge():
                 final_score=100,
             ),
         ],
-        time_remaining_after_visits=600,
     )
 
 
 @optimisation_router.post("/optimise-itinerary", response_model=FinalItineraryOutput)
 async def optimise_itinerary_endpoint(
-    data: SimpleTimeGauge = default_simple_time_gauge(),
+    data: OptimizeTime = default_simple_time_gauge(),
     city: str = "Paris-city",
     travel_dates: List[str] = ["2025-07-12", "2025-07-13"],
     daily_hours_range: Tuple[str, str] = ("08:00", "18:00"),

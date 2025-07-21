@@ -363,6 +363,10 @@ class SimpleTimeGauge(BaseModel):
     time_remaining_after_visits: int
 
 
+class OptimizeTime(BaseModel):
+    spots: List[SimplifiedSpot]
+
+
 class SelectSpotsRequest(BaseModel):
     selected_spot_ids: List[str] = Field(
         ..., description="List of spot IDs to evaluate"
