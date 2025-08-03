@@ -157,21 +157,34 @@ def calculate_travel_time_matrix_batch(
                 # Merge the retry results into the main matrix
                 matrix_time_segments.update(retry_segments)
             else:
-                # Max retries reached, set duree to 99999 for unreachable destinations
-                print(
-                    f"Max retries reached for unreachable destinations. Setting duree to 99999."
-                )
-                for destination in unreachable_destinations:
-                    matrix_time_segments[f"{source_spot['id']}-{destination['id']}"] = (
-                        TravelSegment(
-                            duree=99999, type=TravelMode.TRANSPORT, distance=0
-                        )
+                # Max retries reached, try one more time with driving mode as last resort
+                if retry_count == 2:
+                    print(
+                        f"Trying driving mode as last resort for unreachable destinations"
                     )
-                    matrix_time_segments[f"{destination['id']}-{source_spot['id']}"] = (
-                        TravelSegment(
-                            duree=99999, type=TravelMode.TRANSPORT, distance=0
-                        )
+                    new_travel = {
+                        "source": source_spot,
+                        "destinations": unreachable_destinations,
+                    }
+                    retry_segments = calculate_travel_time_matrix_batch(
+                        new_travel,
+                        city,
+                        transportation="driving",
+                        retry_count=retry_count + 1,
                     )
+                    # Merge the retry results into the main matrix
+                    matrix_time_segments.update(retry_segments)
+                else:
+                    # Absolute max retries reached, exclude these segments completely
+                    print(
+                        f"All transportation modes failed for destinations. Excluding segments to avoid invalid data."
+                    )
+                    for destination in unreachable_destinations:
+                        print(
+                            f"Excluding unreachable destination: {source_spot['id']} -> {destination['id']}"
+                        )
+                        # Don't add these segments to the matrix at all
+                        # This is better than adding invalid data (duree=99999, distance=0)
 
     return matrix_time_segments
 

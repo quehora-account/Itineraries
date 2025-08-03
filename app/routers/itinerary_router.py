@@ -80,8 +80,6 @@ async def select_spots(
 
         # Check if spot fits in remaining time
         if cout_spot <= temps_restant:
-            score_percentage = min(round(final_score * 100), 100)
-
             simplified_spot = SimplifiedSpot(
                 id=spot.id,
                 name=spot.name,
@@ -89,7 +87,7 @@ async def select_spots(
                 images=spot.imageGalleryPaths,
                 rating=spot.rating,
                 ville=spot.cityId.replace("-city", ""),
-                final_score=score_percentage,
+                final_score=int(final_score / 10000),
             )
 
             spots_in_jauge.append(simplified_spot)

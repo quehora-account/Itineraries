@@ -44,12 +44,26 @@ def filter_distance_matrix(
     segments = distance_matrix.segments
 
     new_segments = {}
+    invalid_segments_count = 0
+
     for key, segment in segments.items():
         keys = key.split("-")
         start_id = keys[0]
         end_id = keys[1]
         if start_id in ids and end_id in ids:
+            # Also filter out unreachable segments (distance=0, duree=99999)
+            if segment.distance <= 0 or segment.duree >= 99999:
+                invalid_segments_count += 1
+                logger.warning(
+                    f"Filtering out invalid segment: {key} (distance={segment.distance}, duree={segment.duree})"
+                )
+                continue
             new_segments[key] = segment
+
+    if invalid_segments_count > 0:
+        logger.info(
+            f"Filtered out {invalid_segments_count} invalid segments from distance matrix"
+        )
 
     filtered_matrix = MatrixTime(segments=new_segments)
     return filtered_matrix
@@ -61,13 +75,20 @@ def get_distance_matrix_score(distance_matrix: MatrixTime) -> MatrixScoreDistanc
     score_segment = ((Dmax - Dij) / (Dmax - Dmin)) * 100
     Returns a MatrixScoreDistance with the same keys as the input segments.
     """
-    # Extract all distances
-    distances = [segment.distance for segment in distance_matrix.segments.values()]
-    if not distances:
-        return MatrixScoreDistance(scores={})
+    # Extract all distances, filtering out invalid values (distance=0 for unreachable spots)
+    valid_distances = [
+        segment.distance
+        for segment in distance_matrix.segments.values()
+        if segment.distance > 0 and segment.duree < 99999  # Filter out error cases
+    ]
 
-    dmin = min(distances)
-    dmax = max(distances)
+    if not valid_distances:
+        # If no valid distances, return default scores
+        scores = {key: 50.0 for key in distance_matrix.segments.keys()}
+        return MatrixScoreDistance(scores=scores)
+
+    dmin = min(valid_distances)
+    dmax = max(valid_distances)
 
     # Avoid division by zero if all distances are the same
     if dmax == dmin:
@@ -77,8 +98,16 @@ def get_distance_matrix_score(distance_matrix: MatrixTime) -> MatrixScoreDistanc
 
     scores = {}
     for key, segment in distance_matrix.segments.items():
-        score = ((dmax - segment.distance) / (dmax - dmin)) * 100
-        scores[key] = score
+        # Check for invalid segments (unreachable destinations)
+        if segment.distance <= 0 or segment.duree >= 99999:
+            # Assign very low score for unreachable segments
+            scores[key] = 0.0
+            logger.warning(
+                f"Unreachable segment detected: {key} (distance={segment.distance}, duree={segment.duree})"
+            )
+        else:
+            score = ((dmax - segment.distance) / (dmax - dmin)) * 100
+            scores[key] = score
 
     return MatrixScoreDistance(scores=scores)
 
@@ -453,9 +482,16 @@ def solve_optimization_problem(
                 # Look up travel time in distance matrix
                 key = f"{from_location.id}-{to_location.id}"
                 if key in prepared_data.matrixTime.segments:
-                    travel_time = int(
-                        prepared_data.matrixTime.segments[key].duree
-                    )  # duree is in minutes
+                    segment_duree = prepared_data.matrixTime.segments[key].duree
+                    # Filter out unreachable destinations (duree=99999)
+                    if segment_duree >= 99999:
+                        # Use very high penalty for unreachable destinations to discourage this route
+                        travel_time = 1000  # High penalty but not infinite to allow solver to work
+                        logger.warning(
+                            f"Unreachable route detected: {key} (duree={segment_duree})"
+                        )
+                    else:
+                        travel_time = int(segment_duree)  # duree is in minutes
                 else:
                     # Default travel time if not found
                     travel_time = 15  # 15 minutes default
@@ -982,19 +1018,32 @@ def generate_llm_prompt(
     weather_data: CityWeatherData,
     distance_matrix: MatrixTime,
 ) -> str:
-    """Generate LLM prompt for daily summary description."""
+    """Generate optimized LLM prompt for daily summary description."""
 
-    prompt_parts = [
-        "Rôle : guide de voyage.",
-        "Données :",
-        f"- Date : {daily_itinerary.date}",
-        f"- Ville : {city}",
-        f"- Voyageurs : {companions}",
-        f"- Itinéraire jour {daily_itinerary.day + 1} :",
-    ]
+    def get_weather_summary(weather_percentage: float) -> str:
+        """Convert weather percentage to descriptive summary."""
+        if weather_percentage >= 80:
+            return "ensoleillé"
+        elif weather_percentage >= 60:
+            return "nuageux"
+        elif weather_percentage >= 40:
+            return "mitigé"
+        else:
+            return "pluvieux"
 
-    step_counter = 1
-    for step in daily_itinerary.steps:
+    # Start building the optimized prompt
+    prompt = f"""Rédige un paragraphe fluide et engageant (max 400 caractères) résumant une journée touristique.
+Infos fournies :
+• Date : {daily_itinerary.date}
+• Ville : {city}
+• Profil : {companions}
+• Étapes :"""
+
+    visit_spots = []
+    transport_segments = []
+
+    # Process steps to separate visits and transports
+    for i, step in enumerate(daily_itinerary.steps):
         step_scores = calculate_step_scores(
             step, spots, weather_data, daily_itinerary.date, distance_matrix
         )
@@ -1005,12 +1054,17 @@ def generate_llm_prompt(
             spot_name = spot.name if spot else f"Spot {step.id}"
 
             end_time = calculate_end_time(step.start, step.duration_min)
-            prompt_parts.append(
-                f"{step_counter}) Visite {spot_name} – {step.start}–{end_time} "
-                f"(affluence : {step_scores.crowd_percentage:.0f} %, "
-                f"météo : {step_scores.weather_percentage:.0f} %)"
+            weather_summary = get_weather_summary(step_scores.weather_percentage)
+
+            visit_spots.append(
+                {
+                    "name": spot_name,
+                    "start": step.start,
+                    "end": end_time,
+                    "weather": weather_summary,
+                    "crowd": int(step_scores.crowd_percentage),
+                }
             )
-            step_counter += 1
 
         elif step.type == "transport":
             mode_french = {
@@ -1020,18 +1074,31 @@ def generate_llm_prompt(
                 "bike": "vélo",
             }.get(step.mode, step.mode)
 
-            prompt_parts.append(
-                f"{step_counter}) Transport – {mode_french} "
-                f"({step.duration_min} min, affluence : {step_scores.crowd_percentage:.0f} %, "
-                f"météo : {step_scores.weather_percentage:.0f} %)"
+            transport_segments.append(
+                {"mode": mode_french, "duration": step.duration_min}
             )
-            step_counter += 1
 
-    prompt_parts.append(
-        "Tâche : rédige un paragraphe de moins de 150 caractères décrivant l'esprit de cette journée."
-    )
+    # Add visit spots and transport segments to prompt
+    for i, visit in enumerate(visit_spots):
+        prompt += f"\n○ {visit['name']}, {visit['start']}–{visit['end']}, météo : {visit['weather']}, affluence : {visit['crowd']} %"
 
-    return "\n".join(prompt_parts)
+        # Add transport info if there's a next segment
+        if i < len(transport_segments):
+            transport = transport_segments[i]
+            prompt += (
+                f"\n○ Transport : {transport['mode']}, {transport['duration']} min"
+            )
+
+    prompt += """
+
+Ton :
+• Décris ce qu'on fait et l'ambiance (vue, culture, détente…).
+• Mets en avant météo agréable, faible affluence, rythme fluide.
+• Adapte au profil : romantique (couple), ludique (famille), contemplatif (solo), vivant (amis).
+• Pas de chiffres, transforme-les en sensations naturelles.
+• Pas de "visite 1", enchaîne naturellement."""
+
+    return prompt
 
 
 def calculate_end_time(start_time: str, duration_min: int) -> str:
@@ -1170,8 +1237,15 @@ def create_fallback_solution(
                     key = f"{spot.id}-{next_spot.id}"
                     if key in distance_matrix.segments:
                         segment = distance_matrix.segments[key]
-                        travel_time = int(segment.duree)
-                        travel_mode = segment.type
+                        # Filter out unreachable segments
+                        if segment.duree < 99999 and segment.distance > 0:
+                            travel_time = int(segment.duree)
+                            travel_mode = segment.type
+                        else:
+                            logger.warning(
+                                f"Skipping unreachable segment in fallback: {key}"
+                            )
+                            # Keep default values for unreachable segments
 
                 # Add transport step
                 travel_start = current_time
