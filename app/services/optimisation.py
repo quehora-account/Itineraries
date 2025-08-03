@@ -263,13 +263,18 @@ def create_lunch_info(lunch_requirements: Dict[int, bool]) -> List[SolverLunchIn
 
     for vehicle, needs_lunch in lunch_requirements.items():
         if needs_lunch:
+            # Lunch duration is 90 minutes, so if it starts at 14:00 (840), it ends at 15:30 (930)
+            # But we want to allow starting between 12:00-13:30 so it can finish by 15:00 latest
+            # Time window: 12:00 (720) to 13:30 (810) start time, allowing 90min duration
             lunch_infos.append(
                 SolverLunchInfo(
                     id=f"lunch_day_{vehicle}",
                     dur=90,  # 1.5 hours
                     outdoor=False,
                     vehicle=vehicle,
-                    time_windows=[(720, 840)],  # 12:00 to 14:00 start time
+                    time_windows=[
+                        (720, 810)
+                    ],  # 12:00 to 13:30 start time (90min duration fits within day)
                 )
             )
 
@@ -467,7 +472,7 @@ def solve_optimization_problem(
         time_dimension_name = "Time"
         routing.AddDimension(
             time_callback_index,
-            30,  # slack_max (30 minutes buffer)
+            0,  # slack_max (no buffer to eliminate gaps)
             1440,  # vehicle maximum (24 hours)
             False,  # Don't force start cumul to zero
             time_dimension_name,
@@ -666,6 +671,73 @@ def format_solution_output(
 ) -> FinalItineraryOutput:
     """Format the solution into final JSON output."""
 
+    def adjust_schedule_times(
+        route_steps: List[Dict], prepared_data: PreparedSolverData
+    ) -> List[Dict]:
+        """Post-process route to eliminate gaps and fix timing conflicts."""
+        if not route_steps:
+            return route_steps
+
+        # Find lunch position and optimize its timing
+        lunch_index = None
+        for i, step in enumerate(route_steps):
+            if step["location_id"].startswith("lunch"):
+                lunch_index = i
+                break
+
+        adjusted_steps = []
+        current_time = route_steps[0][
+            "start_time"
+        ]  # Start with the first activity time
+
+        for i, step in enumerate(route_steps):
+            location_id = step["location_id"]
+            duration = step["duration"]
+
+            # Skip depot locations
+            if location_id.startswith("depot"):
+                continue
+
+            # Special handling for lunch to optimize timing
+            if location_id.startswith("lunch"):
+                # Ensure lunch starts in optimal window (12:00-13:30 = 720-810 minutes)
+                optimal_lunch_start = max(720, current_time)  # Don't start before 12:00
+                optimal_lunch_start = min(
+                    810, optimal_lunch_start
+                )  # Don't start after 13:30
+
+                # Check if we need to adjust timing to fit lunch properly
+                if current_time < 720:  # If we're too early for lunch
+                    current_time = 720  # Start lunch at 12:00
+                elif current_time > 810:  # If we're too late for lunch window
+                    current_time = 810  # Start lunch at 13:30 (latest possible)
+                else:
+                    current_time = optimal_lunch_start
+
+            # Set the start time to current_time
+            step_copy = step.copy()
+            step_copy["start_time"] = current_time
+            adjusted_steps.append(step_copy)
+
+            # Update current_time for next activity
+            current_time += duration
+
+            # Add travel time to next location if there is one
+            if i < len(route_steps) - 1:
+                next_step = route_steps[i + 1]
+                next_location_id = next_step["location_id"]
+
+                if not next_location_id.startswith("depot"):
+                    # Calculate travel time
+                    travel_time = 15  # Default
+                    key = f"{location_id}-{next_location_id}"
+                    if key in prepared_data.matrixTime.segments:
+                        travel_time = int(prepared_data.matrixTime.segments[key].duree)
+
+                    current_time += travel_time
+
+        return adjusted_steps
+
     daily_itineraries = []
 
     for route in solution_data["routes"]:
@@ -674,7 +746,8 @@ def format_solution_output(
             date = travel_dates[vehicle_id]
 
             steps = []
-            route_steps = route["route"]
+            # Adjust route to eliminate gaps and fix timing conflicts
+            route_steps = adjust_schedule_times(route["route"], prepared_data)
 
             for i, step_data in enumerate(route_steps):
                 location_id = step_data["location_id"]
@@ -716,10 +789,8 @@ def format_solution_output(
                         )
                     )
 
-                    # Add travel step to next location (only for visits, not lunch)
-                    if (
-                        i < len(route_steps) - 1 and step_type == "visit"
-                    ):  # Only add transport for visits
+                    # Add travel step to next location (for both visits and lunch)
+                    if i < len(route_steps) - 1:  # Add transport after any activity
 
                         next_step = route_steps[i + 1]
                         next_location_id = next_step["location_id"]
@@ -731,13 +802,31 @@ def format_solution_output(
 
                             # Calculate travel time and mode
                             travel_time = 15  # Default
-                            travel_mode = "walk"  # Default mode
+                            travel_mode = TravelMode.WALK  # Default mode
 
                             key = f"{location_id}-{next_location_id}"
                             if key in prepared_data.matrixTime.segments:
                                 segment = prepared_data.matrixTime.segments[key]
                                 travel_time = int(segment.duree)
-                                travel_mode = segment.type
+                                # Ensure travel_mode is properly set from segment type
+                                if hasattr(segment, "type") and segment.type:
+                                    if isinstance(segment.type, str):
+                                        # Map string values to TravelMode enum
+                                        mode_mapping = {
+                                            "walk": TravelMode.WALK,
+                                            "transport": TravelMode.TRANSPORT,
+                                            "virtuel": TravelMode.VIRTUAL,
+                                            "public_transit": TravelMode.TRANSPORT,
+                                            "walking": TravelMode.WALK,
+                                            "transit": TravelMode.TRANSPORT,
+                                        }
+                                        travel_mode = mode_mapping.get(
+                                            segment.type.lower(), TravelMode.WALK
+                                        )
+                                    else:
+                                        travel_mode = segment.type
+                                else:
+                                    travel_mode = TravelMode.WALK
 
                             # Calculate travel start time (after visit ends)
                             travel_start = start_time + duration

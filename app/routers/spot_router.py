@@ -188,9 +188,7 @@ async def find_spots(preferences: SpotUserPreferences):
             )
 
         normalized_popularity = math.log(1 + spot_obj.score) / math.log(1 + max_score)
-        match_percent = round(normalized_similarity * 100)
-        print(f"Normalized similarity: {normalized_similarity}")
-        print(f"Match percent: {match_percent}")
+        match_percent = round(normalized_similarity)
 
         matched_spots_list.append(
             MatchedSpot(
