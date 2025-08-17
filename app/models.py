@@ -6,9 +6,13 @@ from app.enums import (
     TravelCompanion,
     VisitPace,
     OptimizationMode,
-    GeoPoint,
     LocationType,
 )
+
+
+class GeoPoint(BaseModel):
+    latitude: float
+    longitude: float
 
 
 class SpotUserPreferences(BaseModel):
