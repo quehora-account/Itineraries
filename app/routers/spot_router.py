@@ -188,7 +188,7 @@ async def find_spots(preferences: SpotUserPreferences):
             )
 
         normalized_popularity = math.log(1 + spot_obj.score) / math.log(1 + max_score)
-        match_percent = round(normalized_similarity)
+        match_percent = normalized_similarity
 
         matched_spots_list.append(
             MatchedSpot(
@@ -223,6 +223,8 @@ async def find_spots(preferences: SpotUserPreferences):
                 images=spot.spot.imageGalleryPaths,
                 rating=spot.spot.rating,
                 city=spot.spot.cityId.replace("-city", ""),
+                latitude=spot.spot.coordinates.latitude,
+                longitude=spot.spot.coordinates.longitude,
             )
         )
 

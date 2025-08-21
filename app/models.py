@@ -166,6 +166,8 @@ class SimplifiedMatchedSpot(BaseModel):
     images: List[str]
     city: str
     rating: float
+    latitude: float
+    longitude: float
 
 
 class AdjustedVisitDurationInput(BaseModel):
