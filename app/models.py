@@ -37,6 +37,7 @@ class SpotUserPreferences(BaseModel):
             "2024-07-12": ("14:00", "18:00"),
         },
     )
+    visit_pace: VisitPace = Field(..., example=VisitPace.BALANCED)
 
 
 class UserPreferences(SpotUserPreferences):
@@ -161,13 +162,17 @@ class SimplifiedMatchedSpot(BaseModel):
     id: str
     name: str
     type: str
-    score: float
-    match_percent: int
+    match_percent: float
     images: List[str]
     city: str
     rating: float
     latitude: float
     longitude: float
+
+
+class SpotSelectionResponse(BaseModel):
+    included_spots: List[SimplifiedMatchedSpot]
+    time_remaining_end: int
 
 
 class AdjustedVisitDurationInput(BaseModel):

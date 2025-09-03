@@ -97,6 +97,51 @@ def normalize_score(
     return ((value - min_val) / (max_val - min_val)) * scale_to
 
 
+def calculate_time_gauge(hourly_availability: dict, visit_pace: VisitPace) -> tuple:
+    total_time_available = 0
+    n_days = len(hourly_availability)
+
+    for date_str, (start_time, end_time) in hourly_availability.items():
+        start_minutes = time_str_to_minutes(start_time)
+        end_minutes = time_str_to_minutes(end_time)
+        span = end_minutes - start_minutes
+
+        lunch_deduction = 0
+        if start_minutes <= 12 * 60 and end_minutes >= 14 * 60:
+            lunch_deduction = 90
+
+        total_time_available += span - lunch_deduction
+
+    return total_time_available, n_days
+
+
+def apply_visit_pace_adjustment(standard_duration_min: int, pace: VisitPace) -> int:
+    if standard_duration_min <= 30:
+        return 30
+
+    if 30 < standard_duration_min <= 120:
+        if pace == VisitPace.FAST:
+            return standard_duration_min - 15
+        elif pace == VisitPace.RELAXED:
+            return standard_duration_min + 15
+        else:
+            return standard_duration_min
+    elif 120 < standard_duration_min <= 180:
+        if pace == VisitPace.FAST:
+            return standard_duration_min - 30
+        elif pace == VisitPace.RELAXED:
+            return standard_duration_min + 30
+        else:
+            return standard_duration_min
+    else:
+        if pace == VisitPace.FAST:
+            return standard_duration_min - 60
+        elif pace == VisitPace.RELAXED:
+            return standard_duration_min + 60
+        else:
+            return standard_duration_min
+
+
 def get_affluence_score(popular_time: int, density_index: int) -> float:
     if not (0 <= popular_time <= 100):
         popular_time = 50
