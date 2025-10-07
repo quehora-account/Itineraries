@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
+# test
 class Settings:
     API_KEY = os.getenv("API_KEY")
     AUTH_DOMAIN = os.getenv("AUTH_DOMAIN")
