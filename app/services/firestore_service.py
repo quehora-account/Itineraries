@@ -16,7 +16,7 @@ from google.cloud.firestore_v1._helpers import GeoPoint as FirestoreGeoPoint
 
 if not firebase_admin._apps:
     cred = credentials.Certificate(
-        "./hoora-fb944-firebase-adminsdk-hykdj-96b7eea9ff.json"
+        "./hoora-fb944-firebase-adminsdk-hykdj-f5a3a97037.json"
     )
     firebase_admin.initialize_app(cred)
 

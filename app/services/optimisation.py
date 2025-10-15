@@ -185,12 +185,30 @@ def determine_lunch_requirements(user_windows: List[UserWindow]) -> Dict[int, bo
 
 def adjust_visit_duration(standard_duration_min: int, pace: VisitPace) -> int:
     """Adjust visit duration based on user's pace preference."""
-    if pace == VisitPace.RELAXED:
-        return int(standard_duration_min * 1.3)
-    elif pace == VisitPace.FAST:
-        return int(standard_duration_min * 0.7)
-    else:  # BALANCED
-        return standard_duration_min
+    if standard_duration_min <= 30:
+        return 30
+    
+    if 30 < standard_duration_min <= 120:
+        if pace == VisitPace.FAST:
+            return standard_duration_min - 15
+        elif pace == VisitPace.RELAXED:
+            return standard_duration_min + 15
+        else:
+            return standard_duration_min
+    elif 120 < standard_duration_min <= 180:
+        if pace == VisitPace.FAST:
+            return standard_duration_min - 30
+        elif pace == VisitPace.RELAXED:
+            return standard_duration_min + 30
+        else:
+            return standard_duration_min
+    else:
+        if pace == VisitPace.FAST:
+            return standard_duration_min - 60
+        elif pace == VisitPace.RELAXED:
+            return standard_duration_min + 60
+        else:
+            return standard_duration_min
 
 
 def process_spot_info(

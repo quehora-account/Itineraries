@@ -193,12 +193,12 @@ async def ensure_spot_embeddings(spots: List[Any]) -> None:
 
 def normalize_similarity_to_match_percent(
     similarity: float, min_similarity: float, max_similarity: float
-) -> float:
+) -> int:
     """Convert similarity score to [45, 95] range."""
     if max_similarity == min_similarity:
-        return 70.0  # Middle of [45, 95]
+        return 70  # Middle of [45, 95]
     else:
-        return (
+        return round(
             45
             + ((similarity - min_similarity) / (max_similarity - min_similarity)) * 50
         )
@@ -236,7 +236,7 @@ def calculate_spot_scores(
         )
 
     # Sort by popularity score (descending)
-    spots_with_scores.sort(key=lambda x: x["popularity_score"], reverse=True)
+    spots_with_scores.sort(key=lambda x: x["match_percent"], reverse=True)
 
     return spots_with_scores
 
@@ -275,7 +275,8 @@ def apply_time_gauge_selection(
         # Add transport penalty after n_days spots
         transport_penalty = 30 if spots_included >= n_days else 0
         total_time_needed = visit_duration + transport_penalty
-
+        print(f"visit_duration: {visit_duration}, transport_penalty: {transport_penalty}")
+        print(f"total_time_needed: {total_time_needed}, time_remaining: {time_remaining}")
         if time_remaining >= total_time_needed:
             included_spots.append(create_simplified_spot(spot_data))
             time_remaining -= total_time_needed
