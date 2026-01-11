@@ -1,3 +1,5 @@
+import logging
+import sys
 from fastapi import FastAPI
 from fastapi_utilities import repeat_at
 
@@ -6,6 +8,19 @@ from .routers.itinerary_router import itinerary_router
 from .routers.optimisation_router import optimisation_router
 from .routers.data_prep_router import data_prep_router
 from .services.weather import update_daily_weather_data
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # Print to console
+        logging.FileHandler("app.log")      # Also save to file
+    ]
+)
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Travel Itinerary Planner API (Firestore Refactored)",
@@ -26,4 +41,6 @@ def update_weather_data():
 
 @app.on_event("startup")
 def startup_event():
+    logger.info("🚀 Starting Travel Itinerary Planner API...")
     update_weather_data()
+    logger.info("✅ API startup completed successfully")

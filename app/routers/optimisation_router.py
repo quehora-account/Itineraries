@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from app.models import (
     OptimizationMode,
@@ -102,7 +102,7 @@ async def optimise_itinerary_endpoint(
     data: OptimizeTime = default_simple_time_gauge(),
     city: str = "Paris-city",
     travel_dates: List[str] = ["2025-07-12", "2025-07-13"],
-    daily_hours_range: Tuple[str, str] = ("08:00", "18:00"),
+    hourly_availability: Dict[str, List[str]] = {"2025-07-12": ["08:00", "18:00"], "2025-07-13": ["08:00", "18:00"]},
     optimization_mode: OptimizationMode = OptimizationMode.FREEMIUM,
     max_walk_time_per_segment_min: int = 30,
     companions: str = "solo",
@@ -128,7 +128,7 @@ async def optimise_itinerary_endpoint(
         city,
         spots_data,
         travel_dates,
-        daily_hours_range,
+        hourly_availability,
         optimization_mode,
         max_walk_time_per_segment_min,
         visit_pace=visit_pace,

@@ -274,11 +274,14 @@ def get_city_weather_data_from_api(
 
 
 def check_weather_data_coverage(
-    weather_data: CityWeatherData, dates: List[str], hours_range: Tuple[str, str]
+    weather_data: CityWeatherData, dates: List[str], hours_range: Dict[str, List[str]]
 ) -> bool:
     """Check if weather data covers all required dates and hours."""
-    start_hour = int(hours_range[0].split(":")[0])
-    end_hour = int(hours_range[1].split(":")[0])
+    for date_str in dates:
+        if date_str not in hours_range:
+            return False
+        start_hour = int(hours_range[date_str][0].split(":")[0])
+        end_hour = int(hours_range[date_str][1].split(":")[0])
 
     for date_str in dates:
         if date_str not in weather_data.weather_by_date:
@@ -294,19 +297,20 @@ def check_weather_data_coverage(
 
 
 def renormalize_weather_data_for_trip(
-    weather_data: CityWeatherData, dates: List[str], hours_range: Tuple[str, str]
+    weather_data: CityWeatherData, dates: List[str], hours_range: Dict[str, List[str]],
 ) -> CityWeatherData:
     """
     Re-normalize weather data using min/max across the entire trip dates and hours.
     This ensures consistent normalization across all cities for the user's trip.
     """
-    start_hour = int(hours_range[0].split(":")[0])
-    end_hour = int(hours_range[1].split(":")[0])
 
     # Collect all raw weather scores for the requested dates and hours
     all_raw_scores = []
 
     for date_str in dates:
+        start_hour = int(hours_range[date_str][0].split(":")[0])
+        end_hour = int(hours_range[date_str][1].split(":")[0])
+        
         if date_str in weather_data.weather_by_date:
             hourly_data = weather_data.weather_by_date[date_str].hourly_data
             for hour_int in range(start_hour, end_hour + 1):
@@ -440,7 +444,7 @@ def get_multiple_cities_weather_data(
 
 
 def get_city_weather_data(
-    city: str, dates: List[str], hours_range: Tuple[str, str]
+    city: str, dates: List[str], hours_range: Dict[str, List[str]],
 ) -> CityWeatherData:
     """
     Get weather data for a city, preferring database over API.

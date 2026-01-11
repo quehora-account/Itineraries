@@ -112,50 +112,75 @@ def get_distance_matrix_score(distance_matrix: MatrixTime) -> MatrixScoreDistanc
     return MatrixScoreDistance(scores=scores)
 
 
-def calculate_crowd_hour_for_spot(spot: Spot, day_index: int) -> Dict[int, float]:
+def calculate_crowd_hour_for_spot(
+    spot,
+    weekday: int,
+    month: int
+    ) -> Dict[int, float]:
     """
-    Calculate the crowdHour dictionary for a given spot and day.
+    Calcule le score d'affluence pour chaque heure.
+    Formule : score_crowd(h) = popular_time(h) * (density[month-1] / 5)
     Args:
-        spot: The spot object, expected to have 'popularTimes' (list of dicts) and 'density' (list of floats, 12 values for 8am-8pm).
-        day_index: Integer (0=Monday, 6=Sunday) to select the correct day from popularTimes.
+    spot: Objet Spot (structure Firebase)
+    weekday: Jour de la semaine (0=Lundi, 6=Dimanche)
+    month: Mois (1-12)
     Returns:
-        crowdHour: dict mapping hour (int, 8-19) to crowd score (float)
+    Dict {heure: score} où score entre 0-100
     """
-    if not spot.popularTimes or day_index >= len(spot.popularTimes):
-        return {hour: 0.0 for hour in range(8, 20)}
+    
+    # Valeur par défaut si données manquantes
+    default_crowd = {hour: 50.0 for hour in range(8, 20)}
+    # Vérifier popularTimes
+    if not hasattr(spot, 'popularTimes') or not spot.popularTimes:
+        return default_crowd
+    if weekday >= len(spot.popularTimes):
+        return default_crowd
+    
+    # Calculer coefficient mensuel
+    # density est indexé 0-11 (janvier=0, décembre=11)
+    # month est 1-12, donc on fait month-1
+    if not hasattr(spot, 'density') or not spot.density:
+        coefficient = 1.0
+    elif month < 1 or month > len(spot.density):
+        coefficient = 1.0
+    else:
+        month_density = spot.density[month - 1]
+        coefficient = month_density / 5
+    # Récupérer popularTimes pour CE jour de la semaine
 
-    popular_times_day = spot.popularTimes[day_index]  # dict: hour(str) -> score(float)
-    density = spot.density  # list of 12 floats (for 8am-8pm)
-    crowdHour = {}
-
-    for i, hour in enumerate(range(8, 20)):
+    popular_times_day = spot.popularTimes[weekday]
+    # Calculer scores
+    crowdHour: Dict[int, float] = {}
+    for hour in range(8, 20):
         hour_str = str(hour)
-        popular_time = float(popular_times_day.get(hour_str, 0.0))
-        # density_index is expected to be 1-5, but density array may have floats
-        density_index = float(density[i]) if i < len(density) else 1.0
-        coefficient = density_index * 0.2
-        score_brut = popular_time * coefficient
-        crowdHour[hour] = score_brut
-
+        if isinstance(popular_times_day, dict):
+            val = popular_times_day.get(hour, popular_times_day.get(hour_str, 0.0))
+            popular_time = float(val)
+        else:
+            popular_time = float(getattr(popular_times_day, hour_str, 0.0))
+        
+        score = popular_time * coefficient
+        crowdHour[hour] = min(max(score, 0.0), 100.0)
     return crowdHour
 
 
 # === USER AND SPOT DATA MANAGEMENT ===
 
 
+# ex: hourly_availability: {"2024-07-10": ["09:00", "18:00"]}
 def process_user_windows(
-    travel_dates: List[str], daily_hours_range: Tuple[str, str]
+    travel_dates: List[str], hourly_availability: Dict[str, List[str]], 
 ) -> List[UserWindow]:
     """
     Convert daily hours range to user windows for each travel day.
     Returns array of UserWindow objects with day, start, and end in minutes UTC.
     """
     user_windows = []
-
+    
     for i, date in enumerate(travel_dates):
         # Convert time strings to minutes from midnight
-        start_time = daily_hours_range[0]  # e.g., "09:00"
-        end_time = daily_hours_range[1]  # e.g., "18:00"
+        start_time = hourly_availability[date][0]  # e.g., "09:00"
+        end_time = hourly_availability[date][1]  # e.g., "18:00"
 
         start_hour, start_min = map(int, start_time.split(":"))
         end_hour, end_min = map(int, end_time.split(":"))
@@ -212,118 +237,128 @@ def adjust_visit_duration(standard_duration_min: int, pace: VisitPace) -> int:
 
 
 def process_spot_info(
-    spots: List[Spot], travel_dates: List[str], pace: VisitPace = VisitPace.BALANCED
-) -> List[SolverSpotInfo]:
+    spots: List[Spot],
+    travel_dates: List[str],
+    hourly_availability: Dict[str, List[str]],
+    pace: VisitPace = VisitPace.BALANCED
+    ) -> List[SolverSpotInfo]:
     """
-    Process detailed information for each POI to create SolverSpotInfo objects.
+    Transforme les spots en nœuds SolverSpotInfo pour OR-Tools.
+    
+    Crée un nœud par (spot, jour) pour permettre à OR-Tools de
+    choisir le meilleur jour pour chaque visite.
+    Args:
+        spots: Liste des spots bruts depuis Firebase
+        travel_dates: Liste des dates de voyage ["2024-07-10", ...]
+        hourly_availability: Disponibilités user par jour
+        pace: Rythme de visite (FAST, BALANCED, RELAXED)
+    Returns:
+        Liste de SolverSpotInfo prêts pour OR-Tools
     """
+    
     solver_spots = []
-
+    
     for spot in spots:
         try:
-            # Parse visit duration (assuming format like "2h30", "90min", "2h", "120")
-            duration_str = spot.visitDuration.lower().strip()
-
-            if "h" in duration_str:
-                parts = duration_str.split("h")
-                hours = int(parts[0])
-                minutes = int(parts[1]) if len(parts) > 1 and parts[1] else 0
-                duration_min = hours * 60 + minutes
-            elif "min" in duration_str:
-                duration_min = int(duration_str.replace("min", ""))
-            elif duration_str.isdigit():
-                duration_min = int(duration_str)  # Assume minutes
-            else:
-                duration_min = 60  # Default 1 hour
-
-            # Ensure minimum duration
-            duration_min = max(15, duration_min)
-
-            # Adjust duration based on pace
+            # Parser la durée de visite
+            duration_min = parse_visit_duration(spot.visitDuration)
             adjusted_duration = adjust_visit_duration(duration_min, pace)
-
-            # Create time windows based on opening hours
-            time_windows = []
-            if spot.openHours:
-                for open_hour in spot.openHours:
-                    for hours in open_hour.hours:
-                        try:
-                            start_hour, start_min = map(int, hours.start.split(":"))
-                            end_hour, end_min = map(int, hours.end.split(":"))
-
-                            start_minutes = start_hour * 60 + start_min
-                            end_minutes = end_hour * 60 + end_min
-
-                            # Ensure visit can complete before closing
-                            latest_start = end_minutes - adjusted_duration
-                            if latest_start > start_minutes:
-                                time_windows.append((start_minutes, latest_start))
-                        except (ValueError, IndexError):
-                            logger.warning(
-                                f"Invalid opening hours format for spot {spot.id}"
-                            )
-                            continue
-
-            # If no time windows, assume always open during day
-            if not time_windows:
-                time_windows = [(480, 1200)]  # 8:00 to 20:00
-
-            # Calculate crowd hours for the first day (can be extended for multiple days)
-            crowd_hour = calculate_crowd_hour_for_spot(spot, 0)
-
-            # Determine if spot is outdoor
+            
+            # Déterminer si outdoor
             is_outdoor = hasattr(spot, "locationType") and (
                 spot.locationType == LocationType.OUTDOOR
                 or spot.locationType == LocationType.MIXED
             )
+            
+            # Créer un nœud pour CHAQUE jour
+            for day_index, date_str in enumerate(travel_dates):
+                # Calculer weekday et month pour cette date
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                weekday = date_obj.weekday() # Pour horaires d'ouverture + affluence
+                month = date_obj.month # Pour coefficient affluence uniquement
+                
+                # Récupérer disponibilité user CE jour
+                if date_str not in hourly_availability:
+                    continue
+                user_start_time, user_end_time = hourly_availability[date_str]
+                user_start_min = parse_time_to_minutes(user_start_time)
+                user_end_min = parse_time_to_minutes(user_end_time)
 
-            solver_spots.append(
-                SolverSpotInfo(
-                    id=spot.id,
-                    dur=adjusted_duration,
-                    outdoor=is_outdoor,
-                    time_windows=time_windows,
-                    crowdHour=crowd_hour,
-                    ignoreMissingScore=True,
+                # Récupérer horaires d'ouverture du spot CE jour
+                spot_windows = get_spot_windows_for_day(spot, weekday)
+                
+                # Calculer intersection (fenêtres de DÉBUT possible)
+                time_windows = intersect_windows_with_user_availability(
+                    spot_windows, user_start_min, user_end_min, adjusted_duration
                 )
-            )
+                
+                # Si aucune fenêtre valide → spot non visitable ce jour
+                if not time_windows:
+                    continue
+                
+                # Calculer affluence pour CE jour (weekday + month)
+                logger.info(f'Calculating crowd hour for spot {spot.id} on date {date_str} (weekday={weekday}, month={month})')
+                crowd_hour = calculate_crowd_hour_for_spot(spot, weekday, month)
+                
+                # Créer le nœud
+                solver_spots.append(
+                    SolverSpotInfo(
+                        id=f"{spot.id}_day_{day_index}",
+                        original_spot_id=spot.id,
+                        vehicle=day_index,
+                        dur=adjusted_duration,
+                        outdoor=is_outdoor,
+                        time_windows=time_windows,
+                        crowdHour=crowd_hour,
+                        ignoreMissingScore=True,
+                    )
+                )
         except Exception as e:
             logger.warning(f"Error processing spot {spot.id}: {e}")
-            # Use default values for problematic spots
-            solver_spots.append(
-                SolverSpotInfo(
-                    id=spot.id,
-                    dur=60,  # Default 1 hour
-                    outdoor=False,
-                    time_windows=[(480, 1200)],  # 8:00 to 20:00
-                    crowdHour={},
-                    ignoreMissingScore=True,
-                )
-            )
-
+            continue
+    
+    
     return solver_spots
 
 
-def create_lunch_info(lunch_requirements: Dict[int, bool]) -> List[SolverLunchInfo]:
+def create_lunch_info(lunch_requirements: Dict[int, bool], user_windows: List[UserWindow]) -> List[SolverLunchInfo]:
     """Create lunch break information for days that need it."""
     lunch_infos = []
+    
+    LUNCH_DURATION = 90
+    LUNCH_EARLIEST_START = 720 # 12:00
+    LUNCH_LATEST_START_MAX = 840 # 2:00 p.m.
+    
+    # Create a dictionary for quick access to user windows:
+    user_windows_by_vehicle = {w.vehicle: w for w in user_windows}
 
     for vehicle, needs_lunch in lunch_requirements.items():
-        if needs_lunch:
-            # Lunch duration is 90 minutes, so if it starts at 14:00 (840), it ends at 15:30 (930)
-            # But we want to allow starting between 12:00-13:30 so it can finish by 15:00 latest
-            # Time window: 12:00 (720) to 13:30 (810) start time, allowing 90min duration
-            lunch_infos.append(
-                SolverLunchInfo(
-                    id=f"lunch_day_{vehicle}",
-                    dur=90,  # 1.5 hours
-                    outdoor=False,
-                    vehicle=vehicle,
-                    time_windows=[
-                        (720, 810)
-                    ],  # 12:00 to 13:30 start time (90min duration fits within day)
-                )
+        if not needs_lunch:
+            continue
+        
+        window = user_windows_by_vehicle.get(vehicle)
+        if not window:
+            continue
+        
+        # Calculer la dernière heure de début possible
+        # (pour que le lunch finisse avant la fin de journée)
+        latest_start = min(LUNCH_LATEST_START_MAX, window.end - LUNCH_DURATION)
+        
+        if latest_start <= LUNCH_EARLIEST_START:
+            # Pas assez de temps pour un lunch ce jour-là
+            continue
+        
+        lunch_infos.append(
+            SolverLunchInfo(
+                id=f"lunch_day_{vehicle}",
+                dur=LUNCH_DURATION,  # 1.5 hours
+                outdoor=False,
+                vehicle=vehicle,
+                time_windows=[
+                    (LUNCH_EARLIEST_START, latest_start)
+                ], 
             )
+        )
 
     return lunch_infos
 
@@ -343,7 +378,7 @@ def create_depot_info() -> List[SolverDepotInfo]:
 def extract_weather_score_hours(
     weather_data: CityWeatherData,
     travel_dates: List[str],
-    daily_hours_range: Tuple[str, str],
+    hourly_availability: Dict[str, List[str]],
 ) -> Dict[int, float]:
     """
     Extract hourly weather scores for the optimization period.
@@ -351,10 +386,13 @@ def extract_weather_score_hours(
     """
     weather_scores = {}
 
-    start_hour = int(daily_hours_range[0].split(":")[0])
-    end_hour = int(daily_hours_range[1].split(":")[0])
+    
 
     for date in travel_dates:
+        
+        start_hour = int(hourly_availability[date][0].split(":")[0])
+        end_hour = int(hourly_availability[date][1].split(":")[0])
+        
         if date in weather_data.weather_by_date:
             date_weather = weather_data.weather_by_date[date]
 
@@ -455,6 +493,29 @@ def solve_optimization_problem(
 
         # Create routing model
         routing = pywrapcp.RoutingModel(manager)
+        
+        # 1. Grouper les node_ids par original_spot_id
+        nodes_by_original = {}
+        for node_id, loc in enumerate(prepared_data.locations):
+            # Ignorer depot et lunch
+            if loc.id.startswith("depot") or loc.id.startswith("lunch"):
+                continue
+            # Spot dupliqué : original_spot_id doit exister
+            if hasattr(loc, "original_spot_id") and loc.original_spot_id:
+                original_id = loc.original_spot_id
+                nodes_by_original.setdefault(original_id, []).append(node_id)
+        # 2. Créer les disjonctions par groupe
+        for original_id, node_ids in nodes_by_original.items():
+            if len(node_ids) <= 1:
+                continue # Pas besoin de disjonction pour un seul nœud
+            
+            routing_indices = [manager.NodeToIndex(nid) for nid in node_ids]
+            
+            routing.AddDisjunction(
+                routing_indices,
+                1_000_000, # Pénalité si aucun des jours n'est choisi
+                1 # Max 1 visite parmi toutes les variantes day_*
+            )
 
         # Create simplified distance callback
         def distance_callback(from_index, to_index):
@@ -1184,7 +1245,7 @@ def generate_daily_summary(
 def create_fallback_solution(
     spots: List[Spot],
     travel_dates: List[str],
-    daily_hours_range: Tuple[str, str],
+    hourly_availability: Dict[str, List[str]],
     weights: SolverInputWeights,
     distance_matrix: Optional[MatrixTime] = None,
 ) -> FinalItineraryOutput:
@@ -1207,7 +1268,7 @@ def create_fallback_solution(
         spot_index += num_spots
 
         # Create simple schedule
-        start_hour, start_min = map(int, daily_hours_range[0].split(":"))
+        start_hour, start_min = map(int, hourly_availability[date][0].split(":"))
         current_time = start_hour * 60 + start_min
 
         steps = []
@@ -1290,13 +1351,118 @@ def create_fallback_solution(
         days=daily_itineraries,
         scores=OptimizationScores(distance=50, crowd=50, weather=50),
     )
+    
+def parse_time_to_minutes(time_str: str) -> int:
+    """
+    Converts a time in 'HH:MM' format into minutes from  midnight.
+    """
+    try:
+        parts = time_str.split(":")
+        hours = int(parts[0])
+        minutes = int(parts[1]) if len(parts) > 1 else 0
+        return hours * 60 + minutes
+    except (ValueError, IndexError):
+        return 0 # Fallback
+    
+def parse_visit_duration(duration_str: str) -> int:
+    """
+    Parses a visit duration in text format to minutes.
+    Supported formats: "2h30", "90min", "2h", "120"
+    Returns:
+    Duration in minutes (default: 60 if format not recognized)
+    """
+    
+    duration_str = duration_str.lower().strip()
+    try:
+        if "h" in duration_str:
+            parts = duration_str.split("h")
+            hours = int(parts[0])
+            minutes = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+            return hours * 60 + minutes
+        elif "min" in duration_str:
+            return int(duration_str.replace("min", ""))
+        elif duration_str.isdigit():
+            return int(duration_str)
+        else:
+            return 60 # Default 1 hour
+    except (ValueError, IndexError):
+        return 60
+    
+    
+def get_spot_windows_for_day(spot, weekday: int) -> List[Tuple[int, int]]:
+    """
+    Retrieves the time windows for a location on a given day of the week.
+    Arguments: spot: Spot object (Firebase structure) weekday: Day of the week (0=Monday, 6=Sunday)
+    Returns:
+    List of tuples (start_min, end_min). If no times are specified ÿ returns [(480, 1200)] (8am-8pm by default)
+    """
+    
+    spot_windows = []
+    if not spot.openHours or weekday >= len(spot.openHours):
+        # No set hours ÿ consider open 8am-8pm by default
+        return [(480, 1200)]
+    
+    day_data = spot.openHours[weekday]
+    # Manage Firebase structure (dict or object)
+    if isinstance(day_data, dict):
+        hours_list = day_data.get("hours", [])
+    else:
+        hours_list = getattr(day_data, "hours", [])
+        
+    for period in hours_list:
+        if isinstance(period, dict):
+            open_time = period.get("start", "00:00")
+            close_time = period.get("end", "23:59")
+        else:
+            open_time = getattr(period, "start", "00:00")
+            close_time = getattr(period, "end", "23:59")
+            
+        open_min = parse_time_to_minutes(open_time)
+        close_min = parse_time_to_minutes(close_time)
+        spot_windows.append((open_min, close_min))
+        
+    # If no window found ÿ default 8am-8pm
+    if not spot_windows:
+        return [(480, 1200)]
+    return spot_windows
 
+
+def intersect_windows_with_user_availability(
+    spot_windows: List[Tuple[int, int]],
+    user_start_min: int,
+    user_end_min: int,
+    adjusted_duration: int
+    ) -> List[Tuple[int, int]]:
+    """
+    Calculates the intersection of spot windows with user availability.
+    Args:
+    spot_windows: Spot opening windows
+    user_start_min: Start available user (minutes)
+    user_end_min: End available user (minutes)
+    Machine Translated by Google
+    adjusted_duration: Adjusted visit duration (minutes)
+    Returns:
+    Possible START windows for the visit
+    """
+    
+    final_windows = []
+    for spot_start, spot_end in spot_windows:
+        # Début possible = max(ouverture spot, début dispo user)
+        window_start = max(spot_start, user_start_min)
+        # Fin possible = min(fermeture spot - durée, fin dispo user - durée)
+        # Car la visite doit se terminer avant les deux limites
+        window_end = min(spot_end - adjusted_duration, user_end_min - adjusted_duration)
+        
+        if window_start < window_end:
+            final_windows.append((window_start, window_end))
+            
+    return final_windows
 
 def optimise_travel(
     city: str,
     spots: List[Spot],
     travel_dates: List[str],
-    daily_hours_range: Tuple[str, str],
+    hourly_availability: Dict[str, List[str]],
     optimization_mode: OptimizationMode,
     max_walk_time_per_segment_min: int,
     visit_pace: VisitPace = VisitPace.BALANCED,
@@ -1321,27 +1487,27 @@ def optimise_travel(
 
         # Get weather data
         weather_data = get_city_weather_data(
-            city.split("-")[0], travel_dates, daily_hours_range
+            city.split("-")[0], travel_dates, hourly_availability
         )
 
         # === USER AND SPOT DATA MANAGEMENT ===
 
         # Process user windows
-        user_windows = process_user_windows(travel_dates, daily_hours_range)
+        user_windows = process_user_windows(travel_dates, hourly_availability)
 
         # Determine lunch requirements
         lunch_requirements = determine_lunch_requirements(user_windows)
 
         # Process spot information
-        solver_spots = process_spot_info(spots, travel_dates, visit_pace)
+        solver_spots = process_spot_info(spots, travel_dates, hourly_availability, visit_pace)
 
         # Create lunch and depot info
-        lunch_infos = create_lunch_info(lunch_requirements)
+        lunch_infos = create_lunch_info(lunch_requirements, user_windows)
         depot_infos = create_depot_info()
 
         # Extract weather scores
         weather_scores = extract_weather_score_hours(
-            weather_data, travel_dates, daily_hours_range
+            weather_data, travel_dates, hourly_availability
         )
 
         # Combine all locations
@@ -1353,7 +1519,7 @@ def optimise_travel(
             fallback_output = create_fallback_solution(
                 spots,
                 travel_dates,
-                daily_hours_range,
+                hourly_availability,
                 weights,
                 filtered_distance_matrix,
             )
@@ -1401,7 +1567,7 @@ def optimise_travel(
             fallback_output = create_fallback_solution(
                 spots,
                 travel_dates,
-                daily_hours_range,
+                hourly_availability,
                 weights,
                 filtered_distance_matrix,
             )
@@ -1497,7 +1663,7 @@ def optimise_travel(
             fallback_output = create_fallback_solution(
                 spots,
                 travel_dates,
-                daily_hours_range,
+                hourly_availability,
                 weights,
                 filtered_distance_matrix,
             )

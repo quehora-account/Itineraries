@@ -199,14 +199,27 @@ class TimeGaugeStatus(BaseModel):
 
 class ValidationRequest(BaseModel):
     selected_spot_ids: List[str]
-    user_preferences: UserPreferences
+    destination: str
+    travel_dates: List[str]
+    hourly_availability: Dict[str, Tuple[str, str]]
+    visit_pace: str  # "rapide", "équilibré", "détendu"
+    free_only: bool = False 
+    companions: str = "solo"
+    has_children: bool = False
+    activity_types: List[str] = []
+    user_max_walk_min: int = 20
+    premium: bool = True
+    force_continue: bool = False
 
 
 class ValidationResponse(BaseModel):
-    message: str
-    jauge_status_code: int
-    current_total_duration_min: int
-    allocated_visit_time_min: int
+    status: str  # "too_many", "too_few", "ok" [cite: 135]
+    title: Optional[str] = None 
+    message: Optional[str] = None
+    time_dispo_total: int
+    time_used: int
+    time_remaining_end: int
+    itinerary: Optional[dict] = None
 
 
 class TravelSegment(BaseModel):
@@ -266,6 +279,8 @@ class SolverSpotInfo(BaseModel):
     id: str
     dur: int
     outdoor: bool
+    original_spot_id: str = ""
+    vehicle: int = 0
     time_windows: List[Tuple[int, int]]
     crowdHour: Optional[Dict[int, float]] = None
     ignoreMissingScore: bool = True
