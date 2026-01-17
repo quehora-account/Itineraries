@@ -125,6 +125,9 @@ async def itinerary_validation(data: ValidationRequest):
     for spot_id in data.selected_spot_ids: 
         spot = get_spot_from_db(spot_id) 
         # Convert "1:30" format to minutes 
+        if not spot or not spot.visitDuration: 
+            logger.error(f"❌ Spot not found in DB: {spot_id}")
+            continue
         duration = parse_visit_duration_to_minutes(spot.visitDuration) 
         # Adjust based on pace (rapide, équilibré, détendu) 
         adjusted = apply_visit_pace_adjustment(duration, data.visit_pace) 

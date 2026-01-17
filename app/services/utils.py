@@ -117,7 +117,7 @@ def calculate_time_gauge(hourly_availability: dict, visit_pace: VisitPace) -> tu
 
 def apply_visit_pace_adjustment(standard_duration_min: int, pace: VisitPace) -> int:
     if standard_duration_min <= 30:
-        return 30
+        return standard_duration_min
 
     if 30 < standard_duration_min <= 120:
         if pace == VisitPace.FAST:

@@ -34,6 +34,9 @@ def get_spot_from_db(spot_id: str) -> Optional[Spot]:
                 latitude=spot_data["coordinates"].latitude,
                 longitude=spot_data["coordinates"].longitude,
             )
+        # Provide default values for missing required fields
+        if "locationType" not in spot_data:
+            spot_data["locationType"] = "outdoor"  # Default fallback value
         return Spot(**spot_data)
     return None
 
@@ -50,6 +53,9 @@ def get_all_spots_from_db() -> List[Spot]:
                 latitude=spot_data["coordinates"].latitude,
                 longitude=spot_data["coordinates"].longitude,
             )
+        # Provide default values for missing required fields
+        if "locationType" not in spot_data:
+            spot_data["locationType"] = "outdoor"  # Default fallback value
         try:
             spots_list.append(Spot(**spot_data))
         except Exception as e:

@@ -211,7 +211,7 @@ def determine_lunch_requirements(user_windows: List[UserWindow]) -> Dict[int, bo
 def adjust_visit_duration(standard_duration_min: int, pace: VisitPace) -> int:
     """Adjust visit duration based on user's pace preference."""
     if standard_duration_min <= 30:
-        return 30
+        return standard_duration_min
     
     if 30 < standard_duration_min <= 120:
         if pace == VisitPace.FAST:
@@ -301,14 +301,15 @@ def process_spot_info(
                 crowd_hour = calculate_crowd_hour_for_spot(spot, weekday, month)
                 
                 # Créer le nœud
-                solver_spots.append(
+                for tw_idx, tw in enumerate(time_windows):
+                    solver_spots.append(
                     SolverSpotInfo(
-                        id=f"{spot.id}_day_{day_index}",
-                        original_spot_id=spot.id,
+                        id=f"{spot.id}_day_{day_index}_tw_{tw_idx}",
+                        original_spot_id=spot.id,   # regroupe toutes les variantes
                         vehicle=day_index,
                         dur=adjusted_duration,
                         outdoor=is_outdoor,
-                        time_windows=time_windows,
+                        time_windows=[tw],          # 1 seule fenêtre par node
                         crowdHour=crowd_hour,
                         ignoreMissingScore=True,
                     )
@@ -504,18 +505,25 @@ def solve_optimization_problem(
             if hasattr(loc, "original_spot_id") and loc.original_spot_id:
                 original_id = loc.original_spot_id
                 nodes_by_original.setdefault(original_id, []).append(node_id)
+                
+        # forcer le spot sur son véhicule
+        for location_idx, location in enumerate(prepared_data.locations):
+            if hasattr(location, "original_spot_id") and location.original_spot_id:
+                if hasattr(location, "vehicle"):
+                    vehicle_id = location.vehicle
+                    index = manager.NodeToIndex(location_idx)
+                    if index >= 0 and vehicle_id < num_vehicles:
+                        for v in range(num_vehicles):
+                            if v != vehicle_id:
+                                routing.VehicleVar(index).RemoveValue(v)
         # 2. Créer les disjonctions par groupe
-        for original_id, node_ids in nodes_by_original.items():
+        # For each original spot with multiple variants: force exactly one active
+        for oid, node_ids in nodes_by_original.items():
             if len(node_ids) <= 1:
-                continue # Pas besoin de disjonction pour un seul nœud
-            
-            routing_indices = [manager.NodeToIndex(nid) for nid in node_ids]
-            
-            routing.AddDisjunction(
-                routing_indices,
-                1_000_000, # Pénalité si aucun des jours n'est choisi
-                1 # Max 1 visite parmi toutes les variantes day_*
-            )
+                continue
+            indices = [manager.NodeToIndex(n) for n in node_ids]
+            indices = [i for i in indices if i >= 0]
+            solver.Add(solver.Sum([routing.ActiveVar(i) for i in indices]) == 1)
 
         # Create simplified distance callback
         def distance_callback(from_index, to_index):
@@ -576,7 +584,7 @@ def solve_optimization_problem(
                     travel_time = 15  # 15 minutes default
 
             # Service time at destination
-            service_time = to_location.dur
+            service_time = 0 if from_location.id.startswith("depot") else from_location.dur
 
             # Total time = travel time + service time
             return travel_time + service_time
@@ -618,14 +626,14 @@ def solve_optimization_problem(
                     time_dimension.CumulVar(index).SetRange(start_time, end_time)
 
         # Add disjunction for optional visits (spots can be skipped if infeasible)
-        penalty = 1000
-        for location_idx, location in enumerate(prepared_data.locations):
-            if not location.id.startswith("depot") and not location.id.startswith(
-                "lunch"
-            ):
-                index = manager.NodeToIndex(location_idx)
-                if index >= 0:
-                    routing.AddDisjunction([index], penalty)
+        nodes_by_original = {}
+        for node_id, loc in enumerate(prepared_data.locations):
+            if loc.id.startswith("depot") or loc.id.startswith("lunch"):
+                continue
+            if hasattr(loc, "original_spot_id") and loc.original_spot_id:
+                nodes_by_original.setdefault(loc.original_spot_id, []).append(node_id)
+
+        solver = routing.solver()
 
         # Add vehicle assignment constraints for lunch breaks
         for location_idx, location in enumerate(prepared_data.locations):
@@ -815,17 +823,17 @@ def format_solution_output(
 
             # Special handling for lunch to optimize timing
             if location_id.startswith("lunch"):
-                # Ensure lunch starts in optimal window (12:00-13:30 = 720-810 minutes)
+                # Ensure lunch starts in optimal window (12:00-14:00 = 720-840 minutes)
                 optimal_lunch_start = max(720, current_time)  # Don't start before 12:00
                 optimal_lunch_start = min(
-                    810, optimal_lunch_start
-                )  # Don't start after 13:30
+                    840, optimal_lunch_start
+                )  # Don't start after 14:00
 
                 # Check if we need to adjust timing to fit lunch properly
                 if current_time < 720:  # If we're too early for lunch
                     current_time = 720  # Start lunch at 12:00
-                elif current_time > 810:  # If we're too late for lunch window
-                    current_time = 810  # Start lunch at 13:30 (latest possible)
+                elif current_time > 840:  # If we're too late for lunch window
+                    current_time = 840  # Start lunch at 14:00 (latest possible)
                 else:
                     current_time = optimal_lunch_start
 
@@ -989,7 +997,10 @@ def calculate_step_scores(
         # Calculate crowd score based on start time
         start_hour = int(step.start.split(":")[0])
         day_index = datetime.strptime(date, "%Y-%m-%d").weekday()
-        crowd_hour = calculate_crowd_hour_for_spot(spot, day_index)
+        date_obj = datetime.strptime(date, "%Y-%m-%d")
+        weekday = date_obj.weekday()
+        month = date_obj.month
+        crowd_hour = calculate_crowd_hour_for_spot(spot, weekday, month)
         crowd_score = crowd_hour.get(start_hour, 0.0)
         crowd_percentage = min(100.0, max(0.0, crowd_score))
 
@@ -1367,14 +1378,19 @@ def parse_time_to_minutes(time_str: str) -> int:
 def parse_visit_duration(duration_str: str) -> int:
     """
     Parses a visit duration in text format to minutes.
-    Supported formats: "2h30", "90min", "2h", "120"
+    Supported formats: "2h30", "90min", "2h", "120", "HH:MM"
     Returns:
     Duration in minutes (default: 60 if format not recognized)
     """
     
     duration_str = duration_str.lower().strip()
     try:
-        if "h" in duration_str:
+        if ":" in duration_str:
+            parts = duration_str.split(":")
+            hours = int(parts[0])
+            minutes = int(parts[1]) if len(parts) > 1 else 0
+            return hours * 60 + minutes
+        elif "h" in duration_str:
             parts = duration_str.split("h")
             hours = int(parts[0])
             minutes = int(parts[1]) if len(parts) > 1 and parts[1] else 0
