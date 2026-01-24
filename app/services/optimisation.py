@@ -518,12 +518,14 @@ def solve_optimization_problem(
                                 routing.VehicleVar(index).RemoveValue(v)
         # 2. Créer les disjonctions par groupe
         # For each original spot with multiple variants: force exactly one active
+        solver = routing.solver()
+        
         for oid, node_ids in nodes_by_original.items():
             if len(node_ids) <= 1:
                 continue
             indices = [manager.NodeToIndex(n) for n in node_ids]
             indices = [i for i in indices if i >= 0]
-            solver.Add(solver.Sum([routing.ActiveVar(i) for i in indices]) == 1)
+            solver.Add(sum([routing.ActiveVar(i) for i in indices]) == 1)
 
         # Create simplified distance callback
         def distance_callback(from_index, to_index):
@@ -626,14 +628,11 @@ def solve_optimization_problem(
                     time_dimension.CumulVar(index).SetRange(start_time, end_time)
 
         # Add disjunction for optional visits (spots can be skipped if infeasible)
-        nodes_by_original = {}
         for node_id, loc in enumerate(prepared_data.locations):
             if loc.id.startswith("depot") or loc.id.startswith("lunch"):
                 continue
             if hasattr(loc, "original_spot_id") and loc.original_spot_id:
                 nodes_by_original.setdefault(loc.original_spot_id, []).append(node_id)
-
-        solver = routing.solver()
 
         # Add vehicle assignment constraints for lunch breaks
         for location_idx, location in enumerate(prepared_data.locations):
@@ -1502,8 +1501,10 @@ def optimise_travel(
         distance_matrix_score = get_distance_matrix_score(filtered_distance_matrix)
 
         # Get weather data
+        if (city.count("-") == 1):
+            city = city.split("-")[0].lower()
         weather_data = get_city_weather_data(
-            city.split("-")[0], travel_dates, hourly_availability
+            city, travel_dates, hourly_availability
         )
 
         # === USER AND SPOT DATA MANAGEMENT ===

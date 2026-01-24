@@ -53,7 +53,7 @@ def get_duration_category(duration_min: int) -> str:
 
 def get_adjusted_visit_duration(standard_duration_min: int, pace: VisitPace) -> int:
     if standard_duration_min <= 30:
-        return 30
+        return standard_duration_min
     adjustment = 0
     category = get_duration_category(standard_duration_min)
     if category == "30 min - 2h":

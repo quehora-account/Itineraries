@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 def get_weather_comfort_scores(
     temp_c: float, precip_percent: float, wind_kmh: float
 ) -> Tuple[int, int, int]:
+    if (temp_c is None) or (precip_percent is None) or (wind_kmh is None):
+        return 0, 10, 10  # Neutral scores for missing data
     if temp_c <= 0:
         temp_score = 0
     elif temp_c <= 5:
@@ -147,12 +149,10 @@ def load_city_weather_from_db(city: str) -> Optional[CityWeatherData]:
 
 
 def get_city_weather_data_from_api(
-    city: str, dates: List[str], hours_range: Tuple[str, str]
+    city: str, dates: List[str], hourly_availability: Dict[str, List[str]]
 ) -> CityWeatherData:
     """Get weather data from API (original implementation)."""
     weather_by_date_dict = {}
-    start_hour = int(hours_range[0].split(":")[0])
-    end_hour = int(hours_range[1].split(":")[0])
     all_raw_scores = []
     hourly_data_for_norm_stage: Dict[str, Dict[str, WeatherHourlyData]] = {}
 
@@ -177,6 +177,7 @@ def get_city_weather_data_from_api(
     data = response.json()
 
     # Process the hourly data
+    logger.info(f"Processing weather data from API for city: {data}")
     hourly_data = data["hourly"]
     times = hourly_data["time"]
     temperatures = hourly_data["temperature_2m"]
@@ -214,6 +215,8 @@ def get_city_weather_data_from_api(
 
     for date_str in dates:
         hourly_data_dict = {}
+        start_hour = int(hourly_availability[date_str][0].split(":")[0])
+        end_hour = int(hourly_availability[date_str][1].split(":")[0])
         for hour_int in range(start_hour, end_hour + 1):
             hour_key = f"{hour_int:02d}"
 
@@ -224,12 +227,13 @@ def get_city_weather_data_from_api(
 
             idx = times.index(target_time)
 
-            temp_c = temperatures[idx]
-            precip_mm_or_percent = precipitations[idx]
-            wind_kmh = wind_speeds[idx]
-            weather_code = weather_codes[idx]
+            temp_c = temperatures[idx] is not None and temperatures[idx] or 0.0
+            precip_mm_or_percent = precipitations[idx] is not None and precipitations[idx] or 0.0
+            wind_kmh = wind_speeds[idx] is not None and wind_speeds[idx] or 0.0
+            weather_code = weather_codes[idx] is not None and weather_codes[idx] or 0
 
             summary, emoji = weather_mapping.get(weather_code, ("Unknown", "❓"))
+            logger.info(f"Processing weather data for {idx}: temp={temperatures}, precipitation={precip_mm_or_percent}, wind={wind_kmh}, code={weather_code}")
 
             temp_comfort, precip_comfort, wind_comfort = get_weather_comfort_scores(
                 temp_c, precip_mm_or_percent, wind_kmh
@@ -238,7 +242,6 @@ def get_city_weather_data_from_api(
                 temp_comfort, precip_comfort, wind_comfort
             )
             all_raw_scores.append(raw_score)
-
             hourly_data_dict[hour_key] = WeatherHourlyData(
                 temp_c=temp_c,
                 precipitation_mm=precip_mm_or_percent,
@@ -274,14 +277,14 @@ def get_city_weather_data_from_api(
 
 
 def check_weather_data_coverage(
-    weather_data: CityWeatherData, dates: List[str], hours_range: Dict[str, List[str]]
+    weather_data: CityWeatherData, dates: List[str], hourly_availability: Dict[str, List[str]]
 ) -> bool:
     """Check if weather data covers all required dates and hours."""
     for date_str in dates:
-        if date_str not in hours_range:
+        if date_str not in hourly_availability:
             return False
-        start_hour = int(hours_range[date_str][0].split(":")[0])
-        end_hour = int(hours_range[date_str][1].split(":")[0])
+        start_hour = int(hourly_availability[date_str][0].split(":")[0])
+        end_hour = int(hourly_availability[date_str][1].split(":")[0])
 
     for date_str in dates:
         if date_str not in weather_data.weather_by_date:
@@ -444,7 +447,7 @@ def get_multiple_cities_weather_data(
 
 
 def get_city_weather_data(
-    city: str, dates: List[str], hours_range: Dict[str, List[str]],
+    city: str, dates: List[str], hourly_availability: Dict[str, List[str]],
 ) -> CityWeatherData:
     """
     Get weather data for a city, preferring database over API.
@@ -466,13 +469,13 @@ def get_city_weather_data(
         logger.info(f"Found weather data in database for city: {city}")
 
         # Check if cached data covers all required dates and hours
-        if check_weather_data_coverage(cached_weather_data, dates, hours_range):
+        if check_weather_data_coverage(cached_weather_data, dates, hourly_availability):
             logger.info(
                 f"Database weather data covers all required dates/hours for city: {city}"
             )
             # Re-normalize weather data for the specific trip dates/hours
             return renormalize_weather_data_for_trip(
-                cached_weather_data, dates, hours_range
+                cached_weather_data, dates, hourly_availability
             )
         else:
             logger.info(
@@ -481,7 +484,7 @@ def get_city_weather_data(
 
     # Fall back to API if no cached data or incomplete coverage
     logger.info(f"Fetching weather data from API for city: {city}")
-    return get_city_weather_data_from_api(city, dates, hours_range)
+    return get_city_weather_data_from_api(city, dates, hourly_availability)
 
 
 def extract_cities_from_spots(spots: List[Spot]) -> Set[str]:

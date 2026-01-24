@@ -122,10 +122,12 @@ async def itinerary_validation(data: ValidationRequest):
 
     # 2. Retrieve spots and calculate adjusted durations 
     total_durations = 0
+    filtered_selected_spot_ids = data.selected_spot_ids
     for spot_id in data.selected_spot_ids: 
         spot = get_spot_from_db(spot_id) 
         # Convert "1:30" format to minutes 
         if not spot or not spot.visitDuration: 
+            filtered_selected_spot_ids.remove(spot_id)
             logger.error(f"❌ Spot not found in DB: {spot_id}")
             continue
         duration = parse_visit_duration_to_minutes(spot.visitDuration) 
@@ -135,7 +137,7 @@ async def itinerary_validation(data: ValidationRequest):
 
     # 3. Calculate transport penalty 
     # Each spot beyond the first (n_days) costs 30 mins 
-    nb_spots = len(data.selected_spot_ids) 
+    nb_spots = len(filtered_selected_spot_ids) 
     transport_penalty = 30 * max(0, nb_spots - n_days) 
 
     # 4. Final time calculations 
@@ -158,7 +160,7 @@ async def itinerary_validation(data: ValidationRequest):
     
     else: 
         # Case "ok" or forced continue: Run optimization 
-        logger.info(f"✅ Validation passed. Running optimization with {len(data.selected_spot_ids)} spots...")
+        logger.info(f"✅ Validation passed. Running optimization with {len(filtered_selected_spot_ids)} spots...")
         logger.debug(f"📋 Request data: {data}")
         status = "ok" 
         title = None
@@ -170,7 +172,7 @@ async def itinerary_validation(data: ValidationRequest):
             optimizationMode = OptimizationMode.FREEMIUM
         itinerary = optimise_travel(
             city=data.destination,
-            spots=[get_spot_from_db(spot_id) for spot_id in data.selected_spot_ids],
+            spots=[get_spot_from_db(spot_id) for spot_id in filtered_selected_spot_ids],
             travel_dates=data.travel_dates,
             hourly_availability=data.hourly_availability,
             optimization_mode= optimizationMode,
