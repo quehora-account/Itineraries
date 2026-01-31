@@ -146,13 +146,17 @@ async def itinerary_validation(data: ValidationRequest):
 
     # 5. Determine Status 
     itinerary = None
+    
+    
+    optimiseSpotIds = [get_spot_from_db(spot_id) for spot_id in filtered_selected_spot_ids]
+    optimiseSpotIds = [spot for spot in optimiseSpotIds if spot is not None]
     if time_remaining_end < 0: 
         status = "too_many" 
         title = "Trop de lieux sélectionnés!" 
         message = "Le temps estimé dépasse votre disponibilité. Retirez certains lieux pour un parcours réaliste."
         logger.warning(f"❌ Too many spots selected. Time deficit: {abs(time_remaining_end)} minutes") 
     
-    elif time_remaining_end >= 120 and not data.force_continue: 
+    elif (time_remaining_end >= 120 and not data.force_continue) or len(optimiseSpotIds) == 0: 
         status = "too_few" 
         title = "Peu de lieux sélectionnés !" 
         message = "Il reste du temps libre: vous pouvez ajouter d'autres lieux."
@@ -160,7 +164,7 @@ async def itinerary_validation(data: ValidationRequest):
     
     else: 
         # Case "ok" or forced continue: Run optimization 
-        logger.info(f"✅ Validation passed. Running optimization with {len(filtered_selected_spot_ids)} spots...")
+        logger.info(f"✅ Validation passed. Running optimization with {len(optimiseSpotIds)} spots...")
         logger.debug(f"📋 Request data: {data}")
         status = "ok" 
         title = None
@@ -170,9 +174,10 @@ async def itinerary_validation(data: ValidationRequest):
             optimizationMode = OptimizationMode.PREMIUM
         else:
             optimizationMode = OptimizationMode.FREEMIUM
+        
         itinerary = optimise_travel(
             city=data.destination,
-            spots=[get_spot_from_db(spot_id) for spot_id in filtered_selected_spot_ids],
+            spots=optimiseSpotIds,
             travel_dates=data.travel_dates,
             hourly_availability=data.hourly_availability,
             optimization_mode= optimizationMode,

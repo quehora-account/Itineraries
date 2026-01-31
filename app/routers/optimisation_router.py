@@ -1,5 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from typing import Dict, List, Tuple
+import logging
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 from app.models import (
     OptimizationMode,
@@ -115,6 +118,7 @@ async def optimise_itinerary_endpoint(
         raise HTTPException(status_code=400, detail="Invalid optimization mode.")
 
     # Get spots data
+    logger.info(f"🔍 Optimising itinerary for {len(data.spots)} spots in {city} on data {data}")
     spots_data = []
     for spot in data.spots:
         spot_data = get_spot_from_db(spot.id)
@@ -123,7 +127,7 @@ async def optimise_itinerary_endpoint(
 
         del spot_data.embedding
         spots_data.append(spot_data)
-
+    
     optimised_travel = optimise_travel(
         city,
         spots_data,

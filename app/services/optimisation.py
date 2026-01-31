@@ -1,5 +1,7 @@
 from typing import List, Tuple, Dict, Optional, Union, Any
 from datetime import datetime, timedelta
+import logging
+import traceback
 from app.models import (
     MatrixTime,
     Spot,
@@ -30,7 +32,6 @@ from app.services.firestore_service import (
 from app.services.weather import get_city_weather_data
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
-import logging
 from app.services.utils import client
 
 logger = logging.getLogger(__name__)
@@ -345,7 +346,7 @@ def create_lunch_info(lunch_requirements: Dict[int, bool], user_windows: List[Us
         # (pour que le lunch finisse avant la fin de journée)
         latest_start = min(LUNCH_LATEST_START_MAX, window.end - LUNCH_DURATION)
         
-        if latest_start <= LUNCH_EARLIEST_START:
+        if latest_start < LUNCH_EARLIEST_START:
             # Pas assez de temps pour un lunch ce jour-là
             continue
         
@@ -410,31 +411,17 @@ def extract_weather_score_hours(
 
 # === OR-TOOLS SOLVER INTEGRATION ===
 
+def base_spot_id(loc) -> str:
+    """
+    Retourne l'ID original du spot pour les lookups dans les matrices.
+    Les nodes dupliqués (day_X_tw_Y) sont mappés vers leur original_spot_id.
+    """
+    if loc.id.startswith("depot") or loc.id.startswith("lunch"):
+        return loc.id
+    if hasattr(loc, "original_spot_id") and loc.original_spot_id:
+        return loc.original_spot_id
+    return loc.id
 
-def create_distance_callback(
-    matrix_score_distance: MatrixScoreDistance,
-    locations: List[Union[SolverSpotInfo, SolverLunchInfo, SolverDepotInfo]],
-) -> callable:
-    """Create distance callback function for OR-Tools solver."""
-
-    def distance_callback(from_index, to_index):
-        from_id = locations[from_index].id
-        to_id = locations[to_index].id
-
-        # Virtual transitions (depot connections) have zero cost
-        if from_id.startswith("depot") or to_id.startswith("depot"):
-            return 0
-
-        # Look up distance score
-        key = f"{from_id}-{to_id}"
-        if key in matrix_score_distance.scores:
-            # Convert to cost (100 - score) and scale for solver
-            cost = int((100 - matrix_score_distance.scores[key]) * 100)
-            return cost
-
-        return 10000  # High penalty for missing distances
-
-    return distance_callback
 
 
 def create_cost_callback(
@@ -520,12 +507,26 @@ def solve_optimization_problem(
         # For each original spot with multiple variants: force exactly one active
         solver = routing.solver()
         
+        # make lunch mandatory
+        for location_idx, location in enumerate(prepared_data.locations):
+            if location.id.startswith("lunch_day_"):
+                index = manager.NodeToIndex(location_idx)
+            if index >= 0:
+                solver.Add(routing.ActiveVar(index) == 1)
+        
         for oid, node_ids in nodes_by_original.items():
             if len(node_ids) <= 1:
                 continue
             indices = [manager.NodeToIndex(n) for n in node_ids]
             indices = [i for i in indices if i >= 0]
-            solver.Add(sum([routing.ActiveVar(i) for i in indices]) == 1)
+            for oid, node_ids in nodes_by_original.items():
+                if len(node_ids) <= 1:
+                    continue
+                indices = [manager.NodeToIndex(n) for n in node_ids]
+                indices = [i for i in indices if i >= 0]
+                # max_cardinality=1 impose AU PLUS 1 variante visitée
+                # La pénalité élevée incite fortement à en choisir une plutôt que de toutes les skipper
+                routing.AddDisjunction(indices, 100000, 1)
 
         # Create simplified distance callback
         def distance_callback(from_index, to_index):
@@ -534,6 +535,11 @@ def solve_optimization_problem(
 
             from_location = prepared_data.locations[from_node]
             to_location = prepared_data.locations[to_node]
+            
+            from_id = base_spot_id(from_location)
+            to_id = base_spot_id(to_location)
+            key = f"{from_id}-{to_id}"
+            # from_id = locations[from_index].id
 
             # Zero cost for depot transitions
             if from_location.id.startswith("depot") or to_location.id.startswith(
@@ -542,7 +548,6 @@ def solve_optimization_problem(
                 return 0
 
             # Look up distance score between spots
-            key = f"{from_location.id}-{to_location.id}"
             if key in prepared_data.matrixScoreDistance.scores:
                 # Convert score to cost (invert and scale)
                 score = prepared_data.matrixScoreDistance.scores[key]
@@ -562,6 +567,9 @@ def solve_optimization_problem(
 
             from_location = prepared_data.locations[from_node]
             to_location = prepared_data.locations[to_node]
+            
+            from_node_id = base_spot_id(from_location)
+            to_node_id = base_spot_id(to_location)
 
             # Travel time from origin to destination
             travel_time = 0
@@ -569,7 +577,7 @@ def solve_optimization_problem(
                 "depot"
             ) and not to_location.id.startswith("depot"):
                 # Look up travel time in distance matrix
-                key = f"{from_location.id}-{to_location.id}"
+                key = f"{from_node_id}-{to_node_id}"
                 if key in prepared_data.matrixTime.segments:
                     segment_duree = prepared_data.matrixTime.segments[key].duree
                     # Filter out unreachable destinations (duree=99999)
@@ -663,7 +671,7 @@ def solve_optimization_problem(
         # Solve the problem
         logger.info("Starting OR-Tools solver...")
         solution = routing.SolveWithParameters(search_parameters)
-
+        logger.info(f"ENding OR-Tools solver...: ${solution}")
         if solution:
             logger.info(f"Solution found with status: {routing.status()}")
             return extract_solution_data(manager, routing, solution, prepared_data)
@@ -673,8 +681,6 @@ def solve_optimization_problem(
 
     except Exception as e:
         logger.error(f"Error solving optimization problem: {e}")
-        import traceback
-
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
@@ -875,6 +881,11 @@ def format_solution_output(
                 location_id = step_data["location_id"]
                 start_time = step_data["start_time"]
                 duration = step_data["duration"]
+                
+                visit_id = location_id
+                loc = next((l for l in prepared_data.locations if l.id == location_id), None)
+                if loc and hasattr(loc, "original_spot_id") and loc.original_spot_id:
+                    visit_id = loc.original_spot_id
 
                 # Convert minutes to HH:MM format
                 hours = start_time // 60
@@ -899,14 +910,22 @@ def format_solution_output(
                         next_step = route_steps[i + 1]
                         if not next_step["location_id"].startswith("depot"):
                             to_location = next_step["location_id"]
-
+                    
+                    from_location_id = from_location
+                    if (from_location is not None) and "_tw_" in from_location:
+                        from_location_id = from_location.split("_day_")[0]
+                    to_location_id = to_location
+                    if (to_location is not None) and "_tw_" in to_location:
+                        to_location_id = to_location.split("_day_")[0]
+                    logger.info(f"Creating ItineraryStep: type={step_type}, id={visit_id}, from={from_location_id}, to={to_location_id}, start={start_time_str}, duration={duration}")
+                    
                     steps.append(
                         ItineraryStep(
                             type=step_type,
-                            id=location_id,
+                            id=visit_id,
                             start=start_time_str,
                             duration_min=duration,
-                            **{"from": from_location, "to": to_location},
+                            **{"from": from_location_id, "to": to_location_id},
                             mode=None,  # No transport mode for visit/lunch steps
                         )
                     )
@@ -957,11 +976,14 @@ def format_solution_output(
                             travel_start_str = (
                                 f"{travel_hours:02d}:{travel_minutes:02d}"
                             )
-
+                            logger.info(f"Adding transport step from {visit_id} to {next_location_id}, start={travel_start_str}, duration={travel_time}, mode={travel_mode}")
+                            next_location_id_base = next_location_id
+                            if next_location_id is not None and "_tw_" in next_location_id and "day_" in next_location_id:
+                                next_location_id_base = next_location_id.split("_day_")[0]
                             steps.append(
                                 ItineraryStep(
                                     type="transport",
-                                    **{"from": location_id, "to": next_location_id},
+                                    **{"from": visit_id, "to": next_location_id_base},
                                     start=travel_start_str,
                                     duration_min=travel_time,
                                     mode=travel_mode,
@@ -989,7 +1011,11 @@ def calculate_step_scores(
 
     if step.type == "visit":
         # Find the spot data
-        spot = next((s for s in spots if s.id == step.id), None)
+        
+        base_id = step.id
+        if "_tw_" in step.id and "day_" in step.id:
+            base_id = step.id.split("_day_")[0]
+        spot = next((s for s in spots if s.id == base_id), None)
         if not spot:
             return StepScores(crowd_percentage=50.0, weather_percentage=50.0)
 
@@ -1139,7 +1165,10 @@ Infos fournies :
 
         if step.type == "visit":
             # Find spot name
-            spot = next((s for s in spots if s.id == step.id), None)
+            base_id = step.id
+            if "_tw_" in step.id and "day_" in step.id:
+                base_id = step.id.split("_day_")[0]
+            spot = next((s for s in spots if s.id == base_id), None)
             spot_name = spot.name if spot else f"Spot {step.id}"
 
             end_time = calculate_end_time(step.start, step.duration_min)
@@ -1280,12 +1309,30 @@ def create_fallback_solution(
         # Create simple schedule
         start_hour, start_min = map(int, hourly_availability[date][0].split(":"))
         current_time = start_hour * 60 + start_min
+        
+        end_hour, end_min = map(int, hourly_availability[date][1].split(":"))
+        
+        start_minutes = start_hour * 60 + start_min
+        end_minutes = end_hour * 60 + end_min
+        need_lunch = start_minutes <= 720 and end_minutes >= 840  # 12:00-14:00
 
         steps = []
         for i, spot in enumerate(day_spots):
             hours = current_time // 60
             minutes = current_time % 60
             start_time_str = f"{hours:02d}:{minutes:02d}"
+            
+            if need_lunch and current_time >= 720 and current_time <= 840:
+                steps.append(
+                    ItineraryStep(
+                        type="lunch",
+                        id=f"lunch_day_{day_idx}",
+                        start=start_time_str,
+                        duration_min=90,
+                    )
+                )
+                current_time += 90
+                need_lunch = False
 
             # Parse visit duration
             visit_duration = 60  # Default 1 hour
@@ -1489,6 +1536,7 @@ def optimise_travel(
     logger.info(
         f"Starting optimization for {city} with {len(spots)} spots over {len(travel_dates)} days"
     )
+    logger.info(f"city: {city}, travel_dates: {travel_dates}, hourly_availability: {hourly_availability}, optimization_mode: {optimization_mode}, max_walk_time_per_segment_min: {max_walk_time_per_segment_min}, visit_pace: {visit_pace}, companions: {companions}, spots: {[spot.id for spot in spots]}")
 
     try:
         # Load base data
