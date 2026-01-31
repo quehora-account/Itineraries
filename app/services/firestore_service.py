@@ -114,13 +114,39 @@ def save_distance_matrices_to_db(
 
 def load_distance_matrix_from_db(city: str) -> MatrixTime:
     """Load the distance matrix from the database"""
-    doc_ref = store.collection("distance_matrices").document(city)
-    doc = doc_ref.get()
-
-    if not doc.exists:
-        raise ValueError("Distance matrix not found in database")
-
-    return MatrixTime(**doc.to_dict()["matrix_time"])
+    
+    # Normalize city name and create possible variations
+    base_city = city.replace("-City", "").replace("-city", "").strip()
+    
+    # Try different variations of the city name
+    city_variations = [
+        city,  # Try exact input first
+        base_city,  # Try without any suffix
+        f"{base_city}-City",  # Try with -City
+        f"{base_city}-city",  # Try with -city
+        base_city.lower(),  # Try lowercase
+        base_city.capitalize(),  # Try capitalized
+    ]
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_variations = []
+    for variation in city_variations:
+        if variation not in seen:
+            seen.add(variation)
+            unique_variations.append(variation)
+    
+    # Try each variation
+    for city_name in unique_variations:
+        doc_ref = store.collection("distance_matrices").document(city_name)
+        doc = doc_ref.get()
+        if doc.exists:
+            print(f"Found distance matrix for city: '{city_name}' (original input: '{city}')")
+            return MatrixTime(**doc.to_dict()["matrix_time"])
+    
+    # If no variation worked, raise an error with helpful info
+    tried_names = ", ".join(f"'{name}'" for name in unique_variations)
+    raise ValueError(f"Distance matrix not found in database. Tried variations: {tried_names}")
 
 
 def load_optimisation_weights_from_db() -> Dict[str, float]:
