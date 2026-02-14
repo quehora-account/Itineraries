@@ -177,6 +177,8 @@ def get_city_weather_data_from_api(
     data = response.json()
 
     # Process the hourly data
+    if data.get("hourly") is None:
+        return CityWeatherData(city=city, weather_by_date=weather_by_date_dict)
     hourly_data = data["hourly"]
     times = hourly_data["time"]
     temperatures = hourly_data["temperature_2m"]

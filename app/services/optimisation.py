@@ -46,12 +46,12 @@ def filter_distance_matrix(
 
     new_segments = {}
     invalid_segments_count = 0
-
     for key, segment in segments.items():
         keys = key.split("-")
         start_id = keys[0]
         end_id = keys[1]
         if start_id in ids and end_id in ids:
+            logger.info(f"Keeping segment: {key} (distance={segment.distance}, duree={segment.duree})")
             # Also filter out unreachable segments (distance=0, duree=99999)
             if segment.distance <= 0 or segment.duree >= 99999:
                 invalid_segments_count += 1
@@ -511,22 +511,18 @@ def solve_optimization_problem(
         for location_idx, location in enumerate(prepared_data.locations):
             if location.id.startswith("lunch_day_"):
                 index = manager.NodeToIndex(location_idx)
-            if index >= 0:
-                solver.Add(routing.ActiveVar(index) == 1)
+                if index >= 0:
+                    solver.Add(routing.ActiveVar(index) == 1)
         
         for oid, node_ids in nodes_by_original.items():
             if len(node_ids) <= 1:
                 continue
             indices = [manager.NodeToIndex(n) for n in node_ids]
             indices = [i for i in indices if i >= 0]
-            for oid, node_ids in nodes_by_original.items():
-                if len(node_ids) <= 1:
-                    continue
-                indices = [manager.NodeToIndex(n) for n in node_ids]
-                indices = [i for i in indices if i >= 0]
-                # max_cardinality=1 impose AU PLUS 1 variante visitée
-                # La pénalité élevée incite fortement à en choisir une plutôt que de toutes les skipper
-                routing.AddDisjunction(indices, 100000, 1)
+            # max_cardinality=1 impose AU PLUS 1 variante visitée
+            # La pénalité élevée incite fortement à en choisir une plutôt que de toutes les skipper
+            routing.AddDisjunction(indices, 100000, 1)
+            
 
         # Create simplified distance callback
         def distance_callback(from_index, to_index):
@@ -858,7 +854,14 @@ def format_solution_output(
                 if not next_location_id.startswith("depot"):
                     # Calculate travel time
                     travel_time = 15  # Default
-                    key = f"{location_id}-{next_location_id}"
+                    if "_tw_" in location_id and "day_" in location_id:
+                        location_id_base = location_id.split("_day_")[0]
+                    if "_tw_" in next_location_id and "day_" in next_location_id:
+                        next_location_id_base = next_location_id.split("_day_")[0]
+                        
+                        
+                    logger.info(f"Calculating travel time from {location_id_base} to {next_location_id_base}")
+                    key = f"{location_id_base}-{next_location_id_base}"
                     if key in prepared_data.matrixTime.segments:
                         travel_time = int(prepared_data.matrixTime.segments[key].duree)
 
@@ -917,8 +920,6 @@ def format_solution_output(
                     to_location_id = to_location
                     if (to_location is not None) and "_tw_" in to_location:
                         to_location_id = to_location.split("_day_")[0]
-                    logger.info(f"Creating ItineraryStep: type={step_type}, id={visit_id}, from={from_location_id}, to={to_location_id}, start={start_time_str}, duration={duration}")
-                    
                     steps.append(
                         ItineraryStep(
                             type=step_type,
@@ -944,8 +945,12 @@ def format_solution_output(
                             # Calculate travel time and mode
                             travel_time = 15  # Default
                             travel_mode = TravelMode.WALK  # Default mode
-
-                            key = f"{location_id}-{next_location_id}"
+                            
+                            if "_tw_" in location_id and "day_" in location_id:
+                                location_id_base = location_id.split("_day_")[0]
+                            if "_tw_" in next_location_id and "day_" in next_location_id:
+                                next_location_id_base = next_location_id.split("_day_")[0]
+                            key = f"{location_id_base}-{next_location_id_base}"
                             if key in prepared_data.matrixTime.segments:
                                 segment = prepared_data.matrixTime.segments[key]
                                 travel_time = int(segment.duree)
@@ -976,10 +981,7 @@ def format_solution_output(
                             travel_start_str = (
                                 f"{travel_hours:02d}:{travel_minutes:02d}"
                             )
-                            logger.info(f"Adding transport step from {visit_id} to {next_location_id}, start={travel_start_str}, duration={travel_time}, mode={travel_mode}")
-                            next_location_id_base = next_location_id
-                            if next_location_id is not None and "_tw_" in next_location_id and "day_" in next_location_id:
-                                next_location_id_base = next_location_id.split("_day_")[0]
+                            logger.info(f"Adding transport step from {visit_id} to {next_location_id_base}, start={travel_start_str}, duration={travel_time}, mode={travel_mode}")
                             steps.append(
                                 ItineraryStep(
                                     type="transport",
@@ -1541,11 +1543,13 @@ def optimise_travel(
     try:
         # Load base data
         distance_matrix = load_distance_matrix_from_db(city)
+        logger.info(f"Loaded distance matrix with segments: {list(distance_matrix.segments.keys())}")
         weights_dict = load_optimisation_weights_from_db()
         weights = SolverInputWeights(**weights_dict)
 
         # Filter and score distance matrix
         filtered_distance_matrix = filter_distance_matrix(distance_matrix, spots)
+        logger.info(f"Filtered distance matrix segments: {list(filtered_distance_matrix.segments.keys())}")
         distance_matrix_score = get_distance_matrix_score(filtered_distance_matrix)
 
         # Get weather data

@@ -115,6 +115,18 @@ async def itinerary_validation(data: ValidationRequest):
     logger.info(f"📅 Travel dates: {data.travel_dates}, Premium: {data.premium}")
         # 1. Calculate available time and number of days 
     # calculate_time_gauge handles lunch removal (90 min) 
+    
+    if not data.selected_spot_ids or len(data.selected_spot_ids) == 0:
+        logger.warning("⚠️ No spots selected for validation.")
+        return ValidationResponse(
+            status="too_few",
+            title="Aucun lieu sélectionné",
+            message="Veuillez sélectionner au moins un lieu à visiter.",
+            time_dispo_total=0,
+            time_used=0,
+            time_remaining_end=0,
+            itinerary=None
+        )
     time_dispo_total, n_days = calculate_time_gauge(
         data.hourly_availability, 
         data.visit_pace
@@ -122,14 +134,14 @@ async def itinerary_validation(data: ValidationRequest):
 
     # 2. Retrieve spots and calculate adjusted durations 
     total_durations = 0
-    filtered_selected_spot_ids = data.selected_spot_ids
+    filtered_selected_spot_ids = []
     for spot_id in data.selected_spot_ids: 
         spot = get_spot_from_db(spot_id) 
         # Convert "1:30" format to minutes 
         if not spot or not spot.visitDuration: 
-            filtered_selected_spot_ids.remove(spot_id)
             logger.error(f"❌ Spot not found in DB: {spot_id}")
             continue
+        filtered_selected_spot_ids.append(spot_id)
         duration = parse_visit_duration_to_minutes(spot.visitDuration) 
         # Adjust based on pace (rapide, équilibré, détendu) 
         adjusted = apply_visit_pace_adjustment(duration, data.visit_pace) 
