@@ -53,7 +53,7 @@ def filter_distance_matrix(
         if start_id in ids and end_id in ids:
             logger.info(f"Keeping segment: {key} (distance={segment.distance}, duree={segment.duree})")
             # Also filter out unreachable segments (distance=0, duree=99999)
-            if segment.distance <= 0 or segment.duree >= 99999:
+            if segment.duree is None or segment.distance <= 0 or segment.duree >= 99999:
                 invalid_segments_count += 1
                 logger.warning(
                     f"Filtering out invalid segment: {key} (distance={segment.distance}, duree={segment.duree})"
@@ -514,14 +514,14 @@ def solve_optimization_problem(
                 if index >= 0:
                     solver.Add(routing.ActiveVar(index) == 1)
         
-        for oid, node_ids in nodes_by_original.items():
-            if len(node_ids) <= 1:
-                continue
-            indices = [manager.NodeToIndex(n) for n in node_ids]
-            indices = [i for i in indices if i >= 0]
-            # max_cardinality=1 impose AU PLUS 1 variante visitée
-            # La pénalité élevée incite fortement à en choisir une plutôt que de toutes les skipper
-            routing.AddDisjunction(indices, 100000, 1)
+        # for oid, node_ids in nodes_by_original.items():
+        #     if len(node_ids) <= 1:
+        #         continue
+        #     indices = [manager.NodeToIndex(n) for n in node_ids]
+        #     indices = [i for i in indices if i >= 0]
+        #     # max_cardinality=1 impose AU PLUS 1 variante visitée
+        #     # La pénalité élevée incite fortement à en choisir une plutôt que de toutes les skipper
+        #     routing.AddDisjunction(indices, 100000, 1)
             
 
         # Create simplified distance callback
@@ -576,6 +576,7 @@ def solve_optimization_problem(
                 key = f"{from_node_id}-{to_node_id}"
                 if key in prepared_data.matrixTime.segments:
                     segment_duree = prepared_data.matrixTime.segments[key].duree
+                    segment_duree_in_minutes = sec_to_min_rounded(segment_duree)
                     # Filter out unreachable destinations (duree=99999)
                     if segment_duree >= 99999:
                         # Use very high penalty for unreachable destinations to discourage this route
@@ -584,7 +585,7 @@ def solve_optimization_problem(
                             f"Unreachable route detected: {key} (duree={segment_duree})"
                         )
                     else:
-                        travel_time = int(segment_duree)  # duree is in minutes
+                        travel_time = segment_duree_in_minutes  # duree is in minutes
                 else:
                     # Default travel time if not found
                     travel_time = 15  # 15 minutes default
@@ -854,16 +855,20 @@ def format_solution_output(
                 if not next_location_id.startswith("depot"):
                     # Calculate travel time
                     travel_time = 15  # Default
+                    next_location_id_base = next_location_id
+                    location_id_base = location_id
                     if "_tw_" in location_id and "day_" in location_id:
                         location_id_base = location_id.split("_day_")[0]
                     if "_tw_" in next_location_id and "day_" in next_location_id:
                         next_location_id_base = next_location_id.split("_day_")[0]
                         
                         
-                    logger.info(f"Calculating travel time from {location_id_base} to {next_location_id_base}")
                     key = f"{location_id_base}-{next_location_id_base}"
                     if key in prepared_data.matrixTime.segments:
-                        travel_time = int(prepared_data.matrixTime.segments[key].duree)
+                        segment_duree = prepared_data.matrixTime.segments[key].duree
+                        logger.info(f"Found segment in matrixTime for key {key} with duration {segment_duree} seconds")
+                        travel_time = sec_to_min_rounded(segment_duree)
+                        logger.info(f"Calculated travel time: {travel_time} minutes")
 
                     current_time += travel_time
 
@@ -879,6 +884,9 @@ def format_solution_output(
             steps = []
             # Adjust route to eliminate gaps and fix timing conflicts
             route_steps = adjust_schedule_times(route["route"], prepared_data)
+            
+            # En haut de la fonction, initialiser
+            last_visited_spot_id = None
 
             for i, step_data in enumerate(route_steps):
                 location_id = step_data["location_id"]
@@ -945,15 +953,37 @@ def format_solution_output(
                             # Calculate travel time and mode
                             travel_time = 15  # Default
                             travel_mode = TravelMode.WALK  # Default mode
-                            
+                            location_id_base = location_id
+                            next_location_id_base = next_location_id
                             if "_tw_" in location_id and "day_" in location_id:
                                 location_id_base = location_id.split("_day_")[0]
                             if "_tw_" in next_location_id and "day_" in next_location_id:
                                 next_location_id_base = next_location_id.split("_day_")[0]
-                            key = f"{location_id_base}-{next_location_id_base}"
-                            if key in prepared_data.matrixTime.segments:
+                                
+                            # Mémoriser le dernier spot visité (pas lunch, pas depot)
+                            if not location_id.startswith("lunch") and not location_id.startswith("depot"):
+                                last_visited_spot_id = location_id_base
+
+                            # === TRANSPORT APRÈS LUNCH ===
+                            # Lunch n'a pas de coordonnées géo, donc on utilise
+                            # le dernier spot visité avant le lunch comme origine
+                            from_id_for_transport = visit_id
+                            from_id_for_matrix = location_id_base
+                            if location_id.startswith("lunch"):
+                                if last_visited_spot_id is not None:
+                                    from_id_for_transport = last_visited_spot_id
+                                    from_id_for_matrix = last_visited_spot_id
+                                else:
+                                    # Aucun spot visité avant lunch, fallback défaut
+                                    from_id_for_transport = None
+                                    from_id_for_matrix = None
+
+                            key = f"{from_id_for_matrix}-{next_location_id_base}" if from_id_for_matrix else None
+                            if key and key in prepared_data.matrixTime.segments:
                                 segment = prepared_data.matrixTime.segments[key]
-                                travel_time = int(segment.duree)
+                                duree_in_minutes = sec_to_min_rounded(segment.duree)
+                                travel_time = int(duree_in_minutes)
+                                logger.info(f"Calculated travel time for transport step: {travel_time} minutes")
                                 # Ensure travel_mode is properly set from segment type
                                 if hasattr(segment, "type") and segment.type:
                                     if isinstance(segment.type, str):
@@ -974,6 +1004,12 @@ def format_solution_output(
                                 else:
                                     travel_mode = TravelMode.WALK
 
+                            # Plafonner le travel_time après lunch à 30 min
+                            # (OR-Tools prévoit 15+15 = 30 min autour du lunch)
+                            if location_id.startswith("lunch"):
+                                CAP = 30
+                                travel_time = min(travel_time, CAP)
+
                             # Calculate travel start time (after visit ends)
                             travel_start = start_time + duration
                             travel_hours = travel_start // 60
@@ -981,11 +1017,11 @@ def format_solution_output(
                             travel_start_str = (
                                 f"{travel_hours:02d}:{travel_minutes:02d}"
                             )
-                            logger.info(f"Adding transport step from {visit_id} to {next_location_id_base}, start={travel_start_str}, duration={travel_time}, mode={travel_mode}")
+                            logger.info(f"Adding transport step from {from_id_for_transport} to {next_location_id_base}, start={travel_start_str}, duration={travel_time}, mode={travel_mode}")
                             steps.append(
                                 ItineraryStep(
                                     type="transport",
-                                    **{"from": visit_id, "to": next_location_id_base},
+                                    **{"from": from_id_for_transport, "to": next_location_id_base},
                                     start=travel_start_str,
                                     duration_min=travel_time,
                                     mode=travel_mode,
@@ -1076,6 +1112,18 @@ def calculate_step_scores(
 
     else:  # lunch or other
         return StepScores(crowd_percentage=50.0, weather_percentage=50.0)
+
+def sec_to_min_rounded(sec):
+    """Convertit secondes → minutes arrondies au multiple de 5, minimum 1 min."""
+    # Protection contre les valeurs invalides
+    if sec is None or sec <= 0:
+        return 15  # Défaut si valeur manquante ou invalide
+    if sec >= 10800:  # > 3h = probablement erreur de données
+        return 15  # Défaut
+    # Conversion et arrondi
+    minutes = sec / 60
+    rounded = round(minutes / 5) * 5
+    return max(1, int(rounded))
 
 
 def calculate_daily_scores(
@@ -1336,28 +1384,26 @@ def create_fallback_solution(
                 current_time += 90
                 need_lunch = False
 
-            # Parse visit duration
-            visit_duration = 60  # Default 1 hour
-            try:
-                duration_str = spot.visitDuration.lower().strip()
-                if "h" in duration_str:
-                    parts = duration_str.split("h")
-                    hours_part = int(parts[0])
-                    minutes_part = int(parts[1]) if len(parts) > 1 and parts[1] else 0
-                    visit_duration = hours_part * 60 + minutes_part
-                elif "min" in duration_str:
-                    visit_duration = int(duration_str.replace("min", ""))
-                elif duration_str.isdigit():
-                    visit_duration = int(duration_str)
-            except:
-                visit_duration = 60
+                # Recalculer l'heure pour la prochaine visite
+                hours = current_time // 60
+                minutes = current_time % 60
+                start_time_str = f"{hours:02d}:{minutes:02d}"
+                
 
+            # Parse visit duration
+            visit_duration = parse_visit_duration(spot.visitDuration) if spot.visitDuration else 60
+
+            # Calculer from/to
+            previous_spot_id = day_spots[i - 1].id if i > 0 else None
+            next_spot_id = day_spots[i + 1].id if i < len(day_spots) - 1 else None
+            logger.info(f"Adding visit step for spot {spot.id} with duration {visit_duration} min, from {previous_spot_id} to {next_spot_id}")
             steps.append(
                 ItineraryStep(
                     type="visit",
                     id=spot.id,
                     start=start_time_str,
                     duration_min=visit_duration,
+                     **{"from": previous_spot_id, "to": next_spot_id},
                 )
             )
 
@@ -1367,23 +1413,18 @@ def create_fallback_solution(
             # Add travel time to next spot
             if i < len(day_spots) - 1:
                 next_spot = day_spots[i + 1]
-                travel_time = 30  # Default 30 minutes
-                travel_mode = "walk"  # Default mode
+                travel_time = 15  # Défaut COHÉRENT avec OR-Tools (time_callback)
+                travel_mode = "walk"
 
                 # Try to get actual travel time from distance matrix
                 if distance_matrix:
                     key = f"{spot.id}-{next_spot.id}"
                     if key in distance_matrix.segments:
                         segment = distance_matrix.segments[key]
-                        # Filter out unreachable segments
-                        if segment.duree < 99999 and segment.distance > 0:
-                            travel_time = int(segment.duree)
-                            travel_mode = segment.type
-                        else:
-                            logger.warning(
-                                f"Skipping unreachable segment in fallback: {key}"
-                            )
-                            # Keep default values for unreachable segments
+                        # Filtrer : durée > 0 et < 3h (10800 sec)
+                        if segment.duree > 0 and segment.duree < 10800:
+                            travel_time = sec_to_min_rounded(segment.duree)
+                            travel_mode = segment.type if segment.type else "walk"
 
                 # Add transport step
                 travel_start = current_time
@@ -1543,7 +1584,6 @@ def optimise_travel(
     try:
         # Load base data
         distance_matrix = load_distance_matrix_from_db(city)
-        logger.info(f"Loaded distance matrix with segments: {list(distance_matrix.segments.keys())}")
         weights_dict = load_optimisation_weights_from_db()
         weights = SolverInputWeights(**weights_dict)
 
