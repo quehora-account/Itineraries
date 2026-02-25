@@ -53,7 +53,7 @@ def filter_distance_matrix(
         if start_id in ids and end_id in ids:
             logger.info(f"Keeping segment: {key} (distance={segment.distance}, duree={segment.duree})")
             # Also filter out unreachable segments (distance=0, duree=99999)
-            if segment.duree is None or segment.distance <= 0 or segment.duree >= 99999:
+            if segment.duree is None or segment.duree >= 10800:
                 invalid_segments_count += 1
                 logger.warning(
                     f"Filtering out invalid segment: {key} (distance={segment.distance}, duree={segment.duree})"
@@ -514,14 +514,14 @@ def solve_optimization_problem(
                 if index >= 0:
                     solver.Add(routing.ActiveVar(index) == 1)
         
-        # for oid, node_ids in nodes_by_original.items():
-        #     if len(node_ids) <= 1:
-        #         continue
-        #     indices = [manager.NodeToIndex(n) for n in node_ids]
-        #     indices = [i for i in indices if i >= 0]
-        #     # max_cardinality=1 impose AU PLUS 1 variante visitée
-        #     # La pénalité élevée incite fortement à en choisir une plutôt que de toutes les skipper
-        #     routing.AddDisjunction(indices, 100000, 1)
+        for oid, node_ids in nodes_by_original.items():
+            if len(node_ids) <= 1:
+                continue
+            indices = [manager.NodeToIndex(n) for n in node_ids]
+            indices = [i for i in indices if i >= 0]
+            # max_cardinality=1 impose AU PLUS 1 variante visitée
+            # La pénalité élevée incite fortement à en choisir une plutôt que de toutes les skipper
+            routing.AddDisjunction(indices, 100000, 1)
             
 
         # Create simplified distance callback
@@ -633,11 +633,11 @@ def solve_optimization_problem(
                     time_dimension.CumulVar(index).SetRange(start_time, end_time)
 
         # Add disjunction for optional visits (spots can be skipped if infeasible)
-        for node_id, loc in enumerate(prepared_data.locations):
-            if loc.id.startswith("depot") or loc.id.startswith("lunch"):
-                continue
-            if hasattr(loc, "original_spot_id") and loc.original_spot_id:
-                nodes_by_original.setdefault(loc.original_spot_id, []).append(node_id)
+        # for node_id, loc in enumerate(prepared_data.locations):
+        #     if loc.id.startswith("depot") or loc.id.startswith("lunch"):
+        #         continue
+        #     if hasattr(loc, "original_spot_id") and loc.original_spot_id:
+        #         nodes_by_original.setdefault(loc.original_spot_id, []).append(node_id)
 
         # Add vehicle assignment constraints for lunch breaks
         for location_idx, location in enumerate(prepared_data.locations):
@@ -814,6 +814,7 @@ def format_solution_output(
         current_time = route_steps[0][
             "start_time"
         ]  # Start with the first activity time
+        last_visited_spot_id = None
 
         for i, step in enumerate(route_steps):
             location_id = step["location_id"]
@@ -844,6 +845,13 @@ def format_solution_output(
             step_copy["start_time"] = current_time
             adjusted_steps.append(step_copy)
 
+            # Track last visited spot (not lunch, not depot)
+            if not location_id.startswith("lunch") and not location_id.startswith("depot"):
+                spot_base = location_id
+                if "_tw_" in location_id and "day_" in location_id:
+                    spot_base = location_id.split("_day_")[0]
+                last_visited_spot_id = spot_base
+
             # Update current_time for next activity
             current_time += duration
 
@@ -861,9 +869,21 @@ def format_solution_output(
                         location_id_base = location_id.split("_day_")[0]
                     if "_tw_" in next_location_id and "day_" in next_location_id:
                         next_location_id_base = next_location_id.split("_day_")[0]
+                    
+                    
+                    location_id_base_in_key = location_id_base
+                    if location_id_base.startswith("lunch") and last_visited_spot_id is not None:
+                        # Lunch has no geo coordinates, use last visited spot for accurate travel time lookup
+                        location_id_base_in_key = last_visited_spot_id
                         
+                    next_location_id_base_in_key = next_location_id_base
+                    if next_location_id_base.startswith("lunch") and last_visited_spot_id is not None:
+                        # When going to lunch, use last visited spot as the destination stand-in
+                        # (travel to lunch ≈ 0 since lunch happens near the last spot)
+                        next_location_id_base_in_key = last_visited_spot_id
+                    key = f"{location_id_base_in_key}-{next_location_id_base_in_key}"
                         
-                    key = f"{location_id_base}-{next_location_id_base}"
+                    logger.info(f"Calculating travel time from {location_id_base_in_key} to {next_location_id_base_in_key} using key {key} in matrixTime")
                     if key in prepared_data.matrixTime.segments:
                         segment_duree = prepared_data.matrixTime.segments[key].duree
                         logger.info(f"Found segment in matrixTime for key {key} with duration {segment_duree} seconds")
@@ -902,6 +922,13 @@ def format_solution_output(
                 hours = start_time // 60
                 minutes = start_time % 60
                 start_time_str = f"{hours:02d}:{minutes:02d}"
+                
+                location_id_base = location_id
+                # Mémoriser le dernier spot visité (pas lunch, pas depot)
+                if not location_id.startswith("lunch") and not location_id.startswith("depot"):
+                    if location_id_base is not None and "_tw_" in location_id_base and "day_" in location_id_base:
+                        location_id_base = location_id_base.split("_day_")[0]
+                    last_visited_spot_id = location_id_base
 
                 if not location_id.startswith("depot"):
                     step_type = "lunch" if location_id.startswith("lunch") else "visit"
@@ -928,6 +955,11 @@ def format_solution_output(
                     to_location_id = to_location
                     if (to_location is not None) and "_tw_" in to_location:
                         to_location_id = to_location.split("_day_")[0]
+                    
+                    if from_location_id is not None and from_location_id.startswith("lunch") and last_visited_spot_id is not None:
+                        from_location_id = last_visited_spot_id
+                    if to_location_id is not None and to_location_id.startswith("lunch") and last_visited_spot_id is not None:
+                        to_location_id = last_visited_spot_id
                     steps.append(
                         ItineraryStep(
                             type=step_type,
@@ -956,13 +988,9 @@ def format_solution_output(
                             location_id_base = location_id
                             next_location_id_base = next_location_id
                             if "_tw_" in location_id and "day_" in location_id:
-                                location_id_base = location_id.split("_day_")[0]
+                                location_id_base = location_id.split("_day_")[0]                         
                             if "_tw_" in next_location_id and "day_" in next_location_id:
                                 next_location_id_base = next_location_id.split("_day_")[0]
-                                
-                            # Mémoriser le dernier spot visité (pas lunch, pas depot)
-                            if not location_id.startswith("lunch") and not location_id.startswith("depot"):
-                                last_visited_spot_id = location_id_base
 
                             # === TRANSPORT APRÈS LUNCH ===
                             # Lunch n'a pas de coordonnées géo, donc on utilise
@@ -977,8 +1005,13 @@ def format_solution_output(
                                     # Aucun spot visité avant lunch, fallback défaut
                                     from_id_for_transport = None
                                     from_id_for_matrix = None
+                            
+                            from_id_for_transport_base = from_id_for_matrix
+                            if "_tw_" in from_id_for_transport and "day_" in from_id_for_transport:
+                                from_id_for_transport_base = from_id_for_transport.split("_day_")[0]
 
-                            key = f"{from_id_for_matrix}-{next_location_id_base}" if from_id_for_matrix else None
+                            key = f"{from_id_for_transport_base}-{next_location_id_base}" if from_id_for_transport_base else None
+                            logger.info(f"Calculating transport step from {from_id_for_transport_base} to {next_location_id_base} using key {key} in matrixTime")
                             if key and key in prepared_data.matrixTime.segments:
                                 segment = prepared_data.matrixTime.segments[key]
                                 duree_in_minutes = sec_to_min_rounded(segment.duree)
@@ -1017,11 +1050,12 @@ def format_solution_output(
                             travel_start_str = (
                                 f"{travel_hours:02d}:{travel_minutes:02d}"
                             )
-                            logger.info(f"Adding transport step from {from_id_for_transport} to {next_location_id_base}, start={travel_start_str}, duration={travel_time}, mode={travel_mode}")
+                            logger.info(f"Adding transport step from {from_id_for_transport_base} to {next_location_id_base}, start={travel_start_str}, duration={travel_time}, mode={travel_mode}")
+                            
                             steps.append(
                                 ItineraryStep(
                                     type="transport",
-                                    **{"from": from_id_for_transport, "to": next_location_id_base},
+                                    **{"from": from_id_for_transport_base, "to": next_location_id_base},
                                     start=travel_start_str,
                                     duration_min=travel_time,
                                     mode=travel_mode,
@@ -1408,7 +1442,7 @@ def create_fallback_solution(
             )
 
             # Add visit duration to current time
-            current_time += visit_duration
+            current_time += visit_duration  
 
             # Add travel time to next spot
             if i < len(day_spots) - 1:
@@ -1431,12 +1465,11 @@ def create_fallback_solution(
                 travel_hours = travel_start // 60
                 travel_minutes = travel_start % 60
                 travel_start_str = f"{travel_hours:02d}:{travel_minutes:02d}"
-
+                logger.info(f"Adding transport step from spot {spot.id} to {next_spot.id} with duration {travel_time} min, mode {travel_mode}")
                 steps.append(
                     ItineraryStep(
                         type="transport",
-                        from_spot=spot.id,
-                        to_spot=next_spot.id,
+                        **{"from": spot.id, "to": next_spot.id},
                         start=travel_start_str,
                         duration_min=travel_time,
                         mode=travel_mode,
